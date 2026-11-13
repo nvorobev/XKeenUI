@@ -1,0 +1,29 @@
+# Build output
+target
+dist
+dist-ssr
+
+# Dependencies
+node_modules
+
+# Logs and temporary files
+logs
+*.log
+*.bak
+*.tmp
+*.local
+
+# Local tooling
+.claude/*
+!.claude/skills/
+.vscode/*
+!.vscode/extensions.json
+.idea
+.zed
+*.suo
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+__pycache__/

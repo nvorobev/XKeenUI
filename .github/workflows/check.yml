@@ -1,0 +1,60 @@
+name: Check XKeen UI
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main, "feat/**"]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - working-directory: frontend
+        run: |
+          bun install --frozen-lockfile
+          bunx prettier --check src
+          bun run lint
+          bun test
+          bun run build
+      - run: rustup toolchain install nightly --profile minimal -c rust-src -c rustfmt -c clippy
+      - name: Check installer and real Xray routing
+        run: |
+          python3 tests/setup-download-smoke.py
+          curl -fLsS https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip -o /tmp/xray.zip
+          echo "b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82  /tmp/xray.zip" | sha256sum -c -
+          mkdir -p /tmp/xkeen-test-core
+          unzip -q /tmp/xray.zip xray -d /tmp/xkeen-test-core
+          curl -fLsS https://github.com/MetaCubeX/mihomo/releases/download/v1.19.34/mihomo-linux-amd64-v1-v1.19.34.gz -o /tmp/mihomo.gz
+          echo "0c07340a01408d033dda4088ea2a4c1e4d82aeed7b2f84f7c046e93b6ff3290c  /tmp/mihomo.gz" | sha256sum -c -
+          gzip -dc /tmp/mihomo.gz > /tmp/xkeen-test-core/mihomo
+          chmod +x /tmp/xkeen-test-core/mihomo
+          python3 tests/xray-api-smoke.py /tmp/xkeen-test-core/xray
+          bun frontend/tests/export-routing-core-cases.ts /tmp/routing-cases.json
+          python3 tests/xray-routing-generator-smoke.py /tmp/xkeen-test-core/xray /tmp/routing-cases.json /tmp/routing-assets --download --report /tmp/routing-report.json
+          echo "/tmp/xkeen-test-core" >> "$GITHUB_PATH"
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit Rust dependencies for known vulnerabilities
+        working-directory: backend
+        run: cargo audit
+      - working-directory: backend
+        run: |
+          cargo +nightly fmt --all -- --check
+          cargo +nightly clippy --locked --all-targets -- -D warnings
+          cargo +nightly test --locked
+          cargo +nightly build --locked
+      - name: Check panel with real Xray and Mihomo
+        run: |
+          docker run --rm -e XKEEN_UI_SMOKE_CONTAINER=1 \
+            -v "$PWD:/src:ro" -v /tmp/xkeen-test-core:/cores:ro -w /src \
+            ubuntu:26.04 sh -ec '
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 ca-certificates >/dev/null
+              python3 tests/panel-api-smoke.py /src/backend/target/debug/xkeen-ui /cores/xray /cores/mihomo
+            '

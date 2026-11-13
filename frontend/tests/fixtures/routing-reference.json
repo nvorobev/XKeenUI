@@ -1,0 +1,1619 @@
+[
+  {
+    "name": "blockQuic",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "udp",
+            "port": "443",
+            "ip": ["ext:geoip_zkeenip.dat:!ru"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "blockedSites",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": ["ext:geosite_zkeen.dat:domains", "ext:geosite_zkeen.dat:other", "ext:geosite_zkeen.dat:youtube"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "discord",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "network": "udp",
+            "port": "50000-50030"
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "ip": [
+              "138.128.136.0/21",
+              "162.158.0.0/15",
+              "172.64.0.0/13",
+              "34.0.0.0/15",
+              "34.2.0.0/16",
+              "34.3.0.0/23",
+              "34.3.2.0/24",
+              "35.192.0.0/12",
+              "35.208.0.0/12",
+              "35.224.0.0/12",
+              "35.240.0.0/13",
+              "5.200.14.128/25",
+              "66.22.192.0/18",
+              "104.16.0.0/12",
+              "13.200.0.0/13",
+              "13.208.0.0/12",
+              "13.224.0.0/12",
+              "13.24.0.0/13",
+              "13.32.0.0/12",
+              "13.48.0.0/13",
+              "13.56.0.0/14",
+              "143.204.0.0/16",
+              "18.128.0.0/9",
+              "18.32.0.0/11",
+              "18.64.0.0/10",
+              "188.114.96.0/22",
+              "204.11.56.0/23",
+              "23.227.32.0/19",
+              "3.128.0.0/9",
+              "ext:geoip_zkeenip.dat:discord"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "localNetworks",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "ip": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "torrent",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "protocol": ["bittorrent"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "blockCatchAll",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "tcp,udp"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpnCatchAll",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "network": "tcp,udp"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "directCatchAll",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "network": "tcp,udp"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-catalog-geosite_v2fly",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": [
+              "ext:geosite_v2fly.dat:category-ads-all",
+              "ext:geosite_v2fly.dat:xiaomitv-ads",
+              "ext:geosite_v2fly.dat:adobe-ads",
+              "ext:geosite_v2fly.dat:apple-ads",
+              "ext:geosite_v2fly.dat:netflix",
+              "ext:geosite_v2fly.dat:youtube",
+              "ext:geosite_v2fly.dat:spotify",
+              "ext:geosite_v2fly.dat:hulu",
+              "ext:geosite_v2fly.dat:hbo",
+              "ext:geosite_v2fly.dat:disney",
+              "ext:geosite_v2fly.dat:primevideo",
+              "ext:geosite_v2fly.dat:facebook",
+              "ext:geosite_v2fly.dat:twitter",
+              "ext:geosite_v2fly.dat:telegram",
+              "ext:geosite_v2fly.dat:instagram",
+              "ext:geosite_v2fly.dat:discord",
+              "ext:geosite_v2fly.dat:whatsapp",
+              "ext:geosite_v2fly.dat:line",
+              "ext:geosite_v2fly.dat:steam",
+              "ext:geosite_v2fly.dat:epic",
+              "ext:geosite_v2fly.dat:xbox",
+              "ext:geosite_v2fly.dat:playstation",
+              "ext:geosite_v2fly.dat:ea",
+              "ext:geosite_v2fly.dat:uplay",
+              "ext:geosite_v2fly.dat:battle",
+              "ext:geosite_v2fly.dat:yandex",
+              "ext:geosite_v2fly.dat:mail-ru",
+              "ext:geosite_v2fly.dat:vk",
+              "ext:geosite_v2fly.dat:ok",
+              "ext:geosite_v2fly.dat:qiwi",
+              "ext:geosite_v2fly.dat:category-gov-ru",
+              "ext:geosite_v2fly.dat:dropbox",
+              "ext:geosite_v2fly.dat:onedrive",
+              "ext:geosite_v2fly.dat:icloud",
+              "ext:geosite_v2fly.dat:google-drive"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-catalog-geoip_v2fly",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "ip": [
+              "ext:geoip_v2fly.dat:cloudflare",
+              "ext:geoip_v2fly.dat:cloudfront",
+              "ext:geoip_v2fly.dat:facebook",
+              "ext:geoip_v2fly.dat:fastly",
+              "ext:geoip_v2fly.dat:google",
+              "ext:geoip_v2fly.dat:netflix",
+              "ext:geoip_v2fly.dat:telegram",
+              "ext:geoip_v2fly.dat:twitter"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-catalog-antifilter",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": [
+              "ext:geosite_antifilter.dat:antifilter",
+              "ext:geosite_antifilter.dat:antifilter-community",
+              "ext:geosite_antifilter.dat:dengi-vdolg-taganrog",
+              "ext:geosite_antifilter.dat:globa"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-catalog-geosite_zkeen",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": [
+              "ext:geosite_zkeen.dat:domains",
+              "ext:geosite_zkeen.dat:other",
+              "ext:geosite_zkeen.dat:politic",
+              "ext:geosite_zkeen.dat:youtube",
+              "ext:geosite_zkeen.dat:bypass"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-catalog-geoip_zkeen",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "ip": [
+              "ext:geoip_zkeenip.dat:akamai",
+              "ext:geoip_zkeenip.dat:amazon",
+              "ext:geoip_zkeenip.dat:cdn77",
+              "ext:geoip_zkeenip.dat:cloudflare",
+              "ext:geoip_zkeenip.dat:digitalocean",
+              "ext:geoip_zkeenip.dat:fastly",
+              "ext:geoip_zkeenip.dat:hetzner",
+              "ext:geoip_zkeenip.dat:linode",
+              "ext:geoip_zkeenip.dat:ovh",
+              "ext:geoip_zkeenip.dat:discord",
+              "ext:geoip_zkeenip.dat:meta",
+              "ext:geoip_zkeenip.dat:telegram",
+              "ext:geoip_zkeenip.dat:youtube",
+              "ext:geoip_zkeenip.dat:google",
+              "ext:geoip_zkeenip.dat:ru"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-catalog-geosite_category",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": [
+              "regexp:^([\\w\\-\\.]+\\.)ru$",
+              "regexp:^([\\w\\-\\.]+\\.)su$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--p1ai$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--p1acf$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80asehdb$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--c1avg$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80aswg$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80adxhks$",
+              "regexp:^([\\w\\-\\.]+\\.)moscow$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--d1acj3b$",
+              "ext:geosite_v2fly.dat:visa",
+              "ext:geosite_v2fly.dat:mastercard",
+              "ext:geosite_v2fly.dat:paypal",
+              "ext:geosite_v2fly.dat:category-payment",
+              "ext:geosite_v2fly.dat:category-security",
+              "ext:geosite_v2fly.dat:category-anticensorship",
+              "ext:geosite_v2fly.dat:category-malware",
+              "ext:geosite_v2fly.dat:category-chat",
+              "ext:geosite_v2fly.dat:category-social",
+              "ext:geosite_v2fly.dat:category-collaboration",
+              "ext:geosite_v2fly.dat:category-games",
+              "ext:geosite_v2fly.dat:category-gambling",
+              "ext:geosite_v2fly.dat:category-entertainment"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-catalog-geosite_region",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": []
+      }
+    }
+  },
+  {
+    "name": "vpn-catalog-geosite_v2fly",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": [
+              "ext:geosite_v2fly.dat:category-ads-all",
+              "ext:geosite_v2fly.dat:xiaomitv-ads",
+              "ext:geosite_v2fly.dat:adobe-ads",
+              "ext:geosite_v2fly.dat:apple-ads",
+              "ext:geosite_v2fly.dat:netflix",
+              "ext:geosite_v2fly.dat:youtube",
+              "ext:geosite_v2fly.dat:spotify",
+              "ext:geosite_v2fly.dat:hulu",
+              "ext:geosite_v2fly.dat:hbo",
+              "ext:geosite_v2fly.dat:disney",
+              "ext:geosite_v2fly.dat:primevideo",
+              "ext:geosite_v2fly.dat:facebook",
+              "ext:geosite_v2fly.dat:twitter",
+              "ext:geosite_v2fly.dat:telegram",
+              "ext:geosite_v2fly.dat:instagram",
+              "ext:geosite_v2fly.dat:discord",
+              "ext:geosite_v2fly.dat:whatsapp",
+              "ext:geosite_v2fly.dat:line",
+              "ext:geosite_v2fly.dat:steam",
+              "ext:geosite_v2fly.dat:epic",
+              "ext:geosite_v2fly.dat:xbox",
+              "ext:geosite_v2fly.dat:playstation",
+              "ext:geosite_v2fly.dat:ea",
+              "ext:geosite_v2fly.dat:uplay",
+              "ext:geosite_v2fly.dat:battle",
+              "ext:geosite_v2fly.dat:yandex",
+              "ext:geosite_v2fly.dat:mail-ru",
+              "ext:geosite_v2fly.dat:vk",
+              "ext:geosite_v2fly.dat:ok",
+              "ext:geosite_v2fly.dat:qiwi",
+              "ext:geosite_v2fly.dat:category-gov-ru",
+              "ext:geosite_v2fly.dat:dropbox",
+              "ext:geosite_v2fly.dat:onedrive",
+              "ext:geosite_v2fly.dat:icloud",
+              "ext:geosite_v2fly.dat:google-drive"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-catalog-geoip_v2fly",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "ip": [
+              "ext:geoip_v2fly.dat:cloudflare",
+              "ext:geoip_v2fly.dat:cloudfront",
+              "ext:geoip_v2fly.dat:facebook",
+              "ext:geoip_v2fly.dat:fastly",
+              "ext:geoip_v2fly.dat:google",
+              "ext:geoip_v2fly.dat:netflix",
+              "ext:geoip_v2fly.dat:telegram",
+              "ext:geoip_v2fly.dat:twitter"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-catalog-antifilter",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": [
+              "ext:geosite_antifilter.dat:antifilter",
+              "ext:geosite_antifilter.dat:antifilter-community",
+              "ext:geosite_antifilter.dat:dengi-vdolg-taganrog",
+              "ext:geosite_antifilter.dat:globa"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-catalog-geosite_zkeen",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": [
+              "ext:geosite_zkeen.dat:domains",
+              "ext:geosite_zkeen.dat:other",
+              "ext:geosite_zkeen.dat:politic",
+              "ext:geosite_zkeen.dat:youtube",
+              "ext:geosite_zkeen.dat:bypass"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-catalog-geoip_zkeen",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "ip": [
+              "ext:geoip_zkeenip.dat:akamai",
+              "ext:geoip_zkeenip.dat:amazon",
+              "ext:geoip_zkeenip.dat:cdn77",
+              "ext:geoip_zkeenip.dat:cloudflare",
+              "ext:geoip_zkeenip.dat:digitalocean",
+              "ext:geoip_zkeenip.dat:fastly",
+              "ext:geoip_zkeenip.dat:hetzner",
+              "ext:geoip_zkeenip.dat:linode",
+              "ext:geoip_zkeenip.dat:ovh",
+              "ext:geoip_zkeenip.dat:discord",
+              "ext:geoip_zkeenip.dat:meta",
+              "ext:geoip_zkeenip.dat:telegram",
+              "ext:geoip_zkeenip.dat:youtube",
+              "ext:geoip_zkeenip.dat:google",
+              "ext:geoip_zkeenip.dat:ru"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-catalog-geosite_category",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": [
+              "regexp:^([\\w\\-\\.]+\\.)ru$",
+              "regexp:^([\\w\\-\\.]+\\.)su$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--p1ai$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--p1acf$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80asehdb$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--c1avg$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80aswg$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80adxhks$",
+              "regexp:^([\\w\\-\\.]+\\.)moscow$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--d1acj3b$",
+              "ext:geosite_v2fly.dat:visa",
+              "ext:geosite_v2fly.dat:mastercard",
+              "ext:geosite_v2fly.dat:paypal",
+              "ext:geosite_v2fly.dat:category-payment",
+              "ext:geosite_v2fly.dat:category-security",
+              "ext:geosite_v2fly.dat:category-anticensorship",
+              "ext:geosite_v2fly.dat:category-malware",
+              "ext:geosite_v2fly.dat:category-chat",
+              "ext:geosite_v2fly.dat:category-social",
+              "ext:geosite_v2fly.dat:category-collaboration",
+              "ext:geosite_v2fly.dat:category-games",
+              "ext:geosite_v2fly.dat:category-gambling",
+              "ext:geosite_v2fly.dat:category-entertainment"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-catalog-geosite_region",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": []
+      }
+    }
+  },
+  {
+    "name": "direct-catalog-geosite_v2fly",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": [
+              "ext:geosite_v2fly.dat:category-ads-all",
+              "ext:geosite_v2fly.dat:xiaomitv-ads",
+              "ext:geosite_v2fly.dat:adobe-ads",
+              "ext:geosite_v2fly.dat:apple-ads",
+              "ext:geosite_v2fly.dat:netflix",
+              "ext:geosite_v2fly.dat:youtube",
+              "ext:geosite_v2fly.dat:spotify",
+              "ext:geosite_v2fly.dat:hulu",
+              "ext:geosite_v2fly.dat:hbo",
+              "ext:geosite_v2fly.dat:disney",
+              "ext:geosite_v2fly.dat:primevideo",
+              "ext:geosite_v2fly.dat:facebook",
+              "ext:geosite_v2fly.dat:twitter",
+              "ext:geosite_v2fly.dat:telegram",
+              "ext:geosite_v2fly.dat:instagram",
+              "ext:geosite_v2fly.dat:discord",
+              "ext:geosite_v2fly.dat:whatsapp",
+              "ext:geosite_v2fly.dat:line",
+              "ext:geosite_v2fly.dat:steam",
+              "ext:geosite_v2fly.dat:epic",
+              "ext:geosite_v2fly.dat:xbox",
+              "ext:geosite_v2fly.dat:playstation",
+              "ext:geosite_v2fly.dat:ea",
+              "ext:geosite_v2fly.dat:uplay",
+              "ext:geosite_v2fly.dat:battle",
+              "ext:geosite_v2fly.dat:yandex",
+              "ext:geosite_v2fly.dat:mail-ru",
+              "ext:geosite_v2fly.dat:vk",
+              "ext:geosite_v2fly.dat:ok",
+              "ext:geosite_v2fly.dat:qiwi",
+              "ext:geosite_v2fly.dat:category-gov-ru",
+              "ext:geosite_v2fly.dat:dropbox",
+              "ext:geosite_v2fly.dat:onedrive",
+              "ext:geosite_v2fly.dat:icloud",
+              "ext:geosite_v2fly.dat:google-drive"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-catalog-geoip_v2fly",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "ip": [
+              "ext:geoip_v2fly.dat:cloudflare",
+              "ext:geoip_v2fly.dat:cloudfront",
+              "ext:geoip_v2fly.dat:facebook",
+              "ext:geoip_v2fly.dat:fastly",
+              "ext:geoip_v2fly.dat:google",
+              "ext:geoip_v2fly.dat:netflix",
+              "ext:geoip_v2fly.dat:telegram",
+              "ext:geoip_v2fly.dat:twitter"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-catalog-antifilter",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": [
+              "ext:geosite_antifilter.dat:antifilter",
+              "ext:geosite_antifilter.dat:antifilter-community",
+              "ext:geosite_antifilter.dat:dengi-vdolg-taganrog",
+              "ext:geosite_antifilter.dat:globa"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-catalog-geosite_zkeen",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": [
+              "ext:geosite_zkeen.dat:domains",
+              "ext:geosite_zkeen.dat:other",
+              "ext:geosite_zkeen.dat:politic",
+              "ext:geosite_zkeen.dat:youtube",
+              "ext:geosite_zkeen.dat:bypass"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-catalog-geoip_zkeen",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "ip": [
+              "ext:geoip_zkeenip.dat:akamai",
+              "ext:geoip_zkeenip.dat:amazon",
+              "ext:geoip_zkeenip.dat:cdn77",
+              "ext:geoip_zkeenip.dat:cloudflare",
+              "ext:geoip_zkeenip.dat:digitalocean",
+              "ext:geoip_zkeenip.dat:fastly",
+              "ext:geoip_zkeenip.dat:hetzner",
+              "ext:geoip_zkeenip.dat:linode",
+              "ext:geoip_zkeenip.dat:ovh",
+              "ext:geoip_zkeenip.dat:discord",
+              "ext:geoip_zkeenip.dat:meta",
+              "ext:geoip_zkeenip.dat:telegram",
+              "ext:geoip_zkeenip.dat:youtube",
+              "ext:geoip_zkeenip.dat:google",
+              "ext:geoip_zkeenip.dat:ru"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-catalog-geosite_category",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": [
+              "regexp:^([\\w\\-\\.]+\\.)ru$",
+              "regexp:^([\\w\\-\\.]+\\.)su$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--p1ai$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--p1acf$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80asehdb$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--c1avg$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80aswg$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80adxhks$",
+              "regexp:^([\\w\\-\\.]+\\.)moscow$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--d1acj3b$",
+              "ext:geosite_v2fly.dat:visa",
+              "ext:geosite_v2fly.dat:mastercard",
+              "ext:geosite_v2fly.dat:paypal",
+              "ext:geosite_v2fly.dat:category-payment",
+              "ext:geosite_v2fly.dat:category-security",
+              "ext:geosite_v2fly.dat:category-anticensorship",
+              "ext:geosite_v2fly.dat:category-malware",
+              "ext:geosite_v2fly.dat:category-chat",
+              "ext:geosite_v2fly.dat:category-social",
+              "ext:geosite_v2fly.dat:category-collaboration",
+              "ext:geosite_v2fly.dat:category-games",
+              "ext:geosite_v2fly.dat:category-gambling",
+              "ext:geosite_v2fly.dat:category-entertainment"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-catalog-geosite_region",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": []
+      }
+    }
+  },
+  {
+    "name": "strategy-off",
+    "config": {
+      "routing": {
+        "rules": []
+      }
+    }
+  },
+  {
+    "name": "strategy-AsIs",
+    "config": {
+      "routing": {
+        "domainStrategy": "AsIs",
+        "rules": []
+      }
+    }
+  },
+  {
+    "name": "strategy-IPIfNonMatch",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": []
+      }
+    }
+  },
+  {
+    "name": "strategy-IPOnDemand",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPOnDemand",
+        "rules": []
+      }
+    }
+  },
+  {
+    "name": "order-up",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPOnDemand",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "udp",
+            "port": "135,137,138,139"
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "network": "udp",
+            "port": "50000-50030"
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "ip": [
+              "138.128.136.0/21",
+              "162.158.0.0/15",
+              "172.64.0.0/13",
+              "34.0.0.0/15",
+              "34.2.0.0/16",
+              "34.3.0.0/23",
+              "34.3.2.0/24",
+              "35.192.0.0/12",
+              "35.208.0.0/12",
+              "35.224.0.0/12",
+              "35.240.0.0/13",
+              "5.200.14.128/25",
+              "66.22.192.0/18",
+              "104.16.0.0/12",
+              "13.200.0.0/13",
+              "13.208.0.0/12",
+              "13.224.0.0/12",
+              "13.24.0.0/13",
+              "13.32.0.0/12",
+              "13.48.0.0/13",
+              "13.56.0.0/14",
+              "143.204.0.0/16",
+              "18.128.0.0/9",
+              "18.32.0.0/11",
+              "18.64.0.0/10",
+              "188.114.96.0/22",
+              "204.11.56.0/23",
+              "23.227.32.0/19",
+              "3.128.0.0/9",
+              "ext:geoip_zkeenip.dat:discord"
+            ]
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "protocol": ["bittorrent"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "order-down",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPOnDemand",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "udp",
+            "port": "135,137,138,139"
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "network": "udp",
+            "port": "50000-50030"
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "ip": [
+              "138.128.136.0/21",
+              "162.158.0.0/15",
+              "172.64.0.0/13",
+              "34.0.0.0/15",
+              "34.2.0.0/16",
+              "34.3.0.0/23",
+              "34.3.2.0/24",
+              "35.192.0.0/12",
+              "35.208.0.0/12",
+              "35.224.0.0/12",
+              "35.240.0.0/13",
+              "5.200.14.128/25",
+              "66.22.192.0/18",
+              "104.16.0.0/12",
+              "13.200.0.0/13",
+              "13.208.0.0/12",
+              "13.224.0.0/12",
+              "13.24.0.0/13",
+              "13.32.0.0/12",
+              "13.48.0.0/13",
+              "13.56.0.0/14",
+              "143.204.0.0/16",
+              "18.128.0.0/9",
+              "18.32.0.0/11",
+              "18.64.0.0/10",
+              "188.114.96.0/22",
+              "204.11.56.0/23",
+              "23.227.32.0/19",
+              "3.128.0.0/9",
+              "ext:geoip_zkeenip.dat:discord"
+            ]
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "protocol": ["bittorrent"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-ports-tcp",
+    "input": "80,443,1000-2000",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "tcp",
+            "port": "80,443,1000-2000"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-ports-udp",
+    "input": "53,123",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "udp",
+            "port": "53,123"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-ips-exact",
+    "input": "203.0.113.7",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "ip": ["203.0.113.7"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-ips-cidr",
+    "input": "198.51.100.0/24",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "ip": ["198.51.100.0/24"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-domains-partial",
+    "input": "tracker.example",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": ["tracker.example"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-domains-sub",
+    "input": "example.com",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": ["domain:example.com"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-domains-exact",
+    "input": "only.example.com",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": ["full:only.example.com"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-domains-regex",
+    "input": "regexp:^ads\\..+$",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": ["regexp:^ads\\..+$"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-geo-manual-ip",
+    "input": "geoip:ru",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "ip": ["geoip:ru"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-geo-manual-site",
+    "input": "geosite:youtube",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": ["geosite:youtube"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-ports-tcp",
+    "input": "80,443,1000-2000",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "network": "tcp",
+            "port": "80,443,1000-2000"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-ports-udp",
+    "input": "53,123",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "network": "udp",
+            "port": "53,123"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-ips-exact",
+    "input": "203.0.113.7",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "ip": ["203.0.113.7"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-ips-cidr",
+    "input": "198.51.100.0/24",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "ip": ["198.51.100.0/24"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-domains-partial",
+    "input": "tracker.example",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": ["tracker.example"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-domains-sub",
+    "input": "example.com",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": ["domain:example.com"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-domains-exact",
+    "input": "only.example.com",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": ["full:only.example.com"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-domains-regex",
+    "input": "regexp:^ads\\..+$",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": ["regexp:^ads\\..+$"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-geo-manual-ip",
+    "input": "geoip:ru",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "ip": ["geoip:ru"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "vpn-geo-manual-site",
+    "input": "geosite:youtube",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": ["geosite:youtube"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-ports-tcp",
+    "input": "80,443,1000-2000",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "network": "tcp",
+            "port": "80,443,1000-2000"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-ports-udp",
+    "input": "53,123",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "network": "udp",
+            "port": "53,123"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-ips-exact",
+    "input": "203.0.113.7",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "ip": ["203.0.113.7"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-ips-cidr",
+    "input": "198.51.100.0/24",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "ip": ["198.51.100.0/24"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-domains-partial",
+    "input": "tracker.example",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": ["tracker.example"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-domains-sub",
+    "input": "example.com",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": ["domain:example.com"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-domains-exact",
+    "input": "only.example.com",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": ["full:only.example.com"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-domains-regex",
+    "input": "regexp:^ads\\..+$",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": ["regexp:^ads\\..+$"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-geo-manual-ip",
+    "input": "geoip:ru",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "ip": ["geoip:ru"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "direct-geo-manual-site",
+    "input": "geosite:youtube",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": ["geosite:youtube"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-blockAds",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "domain": [
+              "ext:geosite_v2fly.dat:category-ads-all",
+              "google-analytics",
+              "analytics.yandex",
+              "appcenter.ms",
+              "app-measurement.com",
+              "firebase.io",
+              "crashlytics.com"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "block-blockUdp",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "udp",
+            "port": "135,137,138,139"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "preset-full-vpn",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "udp",
+            "port": "135,137,138,139"
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "protocol": ["bittorrent"]
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "network": "tcp,udp"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "preset-except-ru",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "udp",
+            "port": "135,137,138,139"
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "protocol": ["bittorrent"]
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "domain": [
+              "regexp:^([\\w\\-\\.]+\\.)ru$",
+              "regexp:^([\\w\\-\\.]+\\.)su$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--p1ai$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--p1acf$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80asehdb$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--c1avg$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80aswg$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--80adxhks$",
+              "regexp:^([\\w\\-\\.]+\\.)moscow$",
+              "regexp:^([\\w\\-\\.]+\\.)xn--d1acj3b$",
+              "ext:geosite_v2fly.dat:category-gov-ru",
+              "ext:geosite_v2fly.dat:yandex",
+              "ext:geosite_v2fly.dat:vk",
+              "ext:geosite_v2fly.dat:steam"
+            ]
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "ip": ["ext:geoip_zkeenip.dat:ru"]
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "network": "tcp,udp"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "preset-blocked-only",
+    "config": {
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "block",
+            "network": "udp",
+            "port": "135,137,138,139"
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "vless-reality",
+            "domain": ["ext:geosite_zkeen.dat:domains", "ext:geosite_zkeen.dat:other", "ext:geosite_zkeen.dat:youtube"]
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "protocol": ["bittorrent"]
+          },
+          {
+            "type": "field",
+            "inboundTag": ["redirect", "tproxy"],
+            "outboundTag": "direct",
+            "network": "tcp,udp"
+          }
+        ]
+      }
+    }
+  }
+]

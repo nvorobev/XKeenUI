@@ -1,0 +1,52 @@
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Команда для скачивания zkeen.dat: 
+// curl -Lo /opt/etc/xray/dat/zkeen.dat https://github.com/jameszeroX/zkeen-domains/releases/latest/download/zkeen.dat
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Команда для скачивания zkeenip.dat: 
+// curl -Lo /opt/etc/xray/dat/zkeenip.dat https://github.com/jameszeroX/zkeen-ip/releases/latest/download/zkeenip.dat
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+{
+  "routing": {
+    "rules": [
+      {
+        "port": "443",
+        "network": "udp",
+        "outboundTag": "block"
+      },
+      {
+        "domain": [
+          "ext:zkeen.dat:domains",
+          "ext:zkeen.dat:other",
+          "ext:zkeen.dat:youtube"
+        ],
+        "outboundTag": "vless-reality"
+      },
+      {
+        "ip": [
+          "ext:zkeenip.dat:akamai",
+          "ext:zkeenip.dat:amazon",
+          "ext:zkeenip.dat:cdn77",
+          "ext:zkeenip.dat:cloudflare",
+          "ext:zkeenip.dat:contabo",
+          "ext:zkeenip.dat:digitalocean",
+          "ext:zkeenip.dat:discord",
+          "ext:zkeenip.dat:fastly",
+          "ext:zkeenip.dat:gcore",
+          "ext:zkeenip.dat:hetzner",
+          "ext:zkeenip.dat:meta",
+          "ext:zkeenip.dat:oracle",
+          "ext:zkeenip.dat:ovh",
+          "ext:zkeenip.dat:scaleway",
+          "ext:zkeenip.dat:telegram",
+          "ext:zkeenip.dat:vodafone",
+          "ext:zkeenip.dat:vultr"
+        ],
+        "outboundTag": "vless-reality"
+      },
+      {
+        "network": "tcp,udp",
+        "outboundTag": "direct"
+      }
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "file": "geosite_v2fly.dat",
+    "source": "https://github.com/v2fly/domain-list-community/releases/download/20261112220449/dlc.dat",
+    "size": 2414151,
+    "sha256": "02ad51927d05608b672bbcdf37f37b94ce1fdb7dcd10852f367ed457ad56280b"
+  },
+  {
+    "file": "geoip_v2fly.dat",
+    "source": "https://github.com/v2fly/geoip/releases/download/202611080027/geoip.dat",
+    "size": 23876117,
+    "sha256": "eedb24b3b9fcba27e06b92c0428dab90d9496083091ae4cf39e11387fd99d0e2"
+  },
+  {
+    "file": "geosite_zkeen.dat",
+    "source": "https://github.com/jameszeroX/zkeen-domains/releases/download/261107/zkeen.dat",
+    "size": 34292,
+    "sha256": "87ec0e27b444b55fd0447ed3e0d3024fdae4c0f84376dbd36c5737d081930944"
+  },
+  {
+    "file": "geoip_zkeenip.dat",
+    "source": "https://github.com/jameszeroX/zkeen-ip/releases/download/261107/zkeenip.dat",
+    "size": 473271,
+    "sha256": "73660aee74930ee39c59e7f96d0ad5cda7d1b1dbdf33cf4f0e5ab7b142affa7f"
+  },
+  {
+    "file": "geosite_antifilter.dat",
+    "source": "https://github.com/Skrill0/AntiFilter-Domains/releases/download/03.02.2024/geosite.dat",
+    "size": 9444817,
+    "sha256": "61f241f33f3fd919625558d23168318291c349dc3c26466f713059511f562be5"
+  }
+]

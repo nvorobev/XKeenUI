@@ -1,0 +1,555 @@
+{
+  "geosite_v2fly": [
+    {
+      "items": [
+        {
+          "description": "Глобальный список рекламы",
+          "text": "category-ads-all",
+          "value": "ext:geosite_v2fly.dat:category-ads-all"
+        },
+        {
+          "description": "Реклама Xiaomi TV",
+          "text": "xiaomitv-ads",
+          "value": "ext:geosite_v2fly.dat:xiaomitv-ads"
+        },
+        {
+          "description": "Домены Adobe",
+          "text": "adobe-ads",
+          "value": "ext:geosite_v2fly.dat:adobe-ads"
+        },
+        {
+          "description": "Домены Apple",
+          "text": "apple-ads",
+          "value": "ext:geosite_v2fly.dat:apple-ads"
+        }
+      ],
+      "name": "Реклама и аналитика"
+    },
+    {
+      "items": [
+        {
+          "description": "Домены Netflix",
+          "text": "netflix",
+          "value": "ext:geosite_v2fly.dat:netflix"
+        },
+        {
+          "description": "Домены YouTube",
+          "text": "youtube",
+          "value": "ext:geosite_v2fly.dat:youtube"
+        },
+        {
+          "description": "Домены Spotify",
+          "text": "spotify",
+          "value": "ext:geosite_v2fly.dat:spotify"
+        },
+        {
+          "description": "Домены Hulu",
+          "text": "hulu",
+          "value": "ext:geosite_v2fly.dat:hulu"
+        },
+        {
+          "description": "Домены HBO",
+          "text": "hbo",
+          "value": "ext:geosite_v2fly.dat:hbo"
+        },
+        {
+          "description": "Домены Disney+",
+          "text": "disney",
+          "value": "ext:geosite_v2fly.dat:disney"
+        },
+        {
+          "description": "Домены Amazon Prime Video",
+          "text": "primevideo",
+          "value": "ext:geosite_v2fly.dat:primevideo"
+        }
+      ],
+      "name": "Потоковые сервисы"
+    },
+    {
+      "items": [
+        {
+          "description": "Домены Facebook",
+          "text": "facebook",
+          "value": "ext:geosite_v2fly.dat:facebook"
+        },
+        {
+          "description": "Домены Twitter/X",
+          "text": "twitter",
+          "value": "ext:geosite_v2fly.dat:twitter"
+        },
+        {
+          "description": "Домены Telegram",
+          "text": "telegram",
+          "value": "ext:geosite_v2fly.dat:telegram"
+        },
+        {
+          "description": "Домены Instagram",
+          "text": "instagram",
+          "value": "ext:geosite_v2fly.dat:instagram"
+        },
+        {
+          "description": "Домены Discord",
+          "text": "discord",
+          "value": "ext:geosite_v2fly.dat:discord"
+        },
+        {
+          "description": "Домены WhatsApp",
+          "text": "whatsapp",
+          "value": "ext:geosite_v2fly.dat:whatsapp"
+        },
+        {
+          "description": "Домены LINE",
+          "text": "line",
+          "value": "ext:geosite_v2fly.dat:line"
+        }
+      ],
+      "name": "Социальные сети"
+    },
+    {
+      "items": [
+        {
+          "description": "Домены Steam",
+          "text": "steam",
+          "value": "ext:geosite_v2fly.dat:steam"
+        },
+        {
+          "description": "Домены Epic Games",
+          "text": "epic",
+          "value": "ext:geosite_v2fly.dat:epic"
+        },
+        {
+          "description": "Домены Xbox Live",
+          "text": "xbox",
+          "value": "ext:geosite_v2fly.dat:xbox"
+        },
+        {
+          "description": "Домены PlayStation Network",
+          "text": "playstation",
+          "value": "ext:geosite_v2fly.dat:playstation"
+        },
+        {
+          "description": "Домены Electronic Arts",
+          "text": "ea",
+          "value": "ext:geosite_v2fly.dat:ea"
+        },
+        {
+          "description": "Домены Ubisoft Connect",
+          "text": "uplay",
+          "value": "ext:geosite_v2fly.dat:uplay"
+        },
+        {
+          "description": "Домены Battle.net",
+          "text": "battle",
+          "value": "ext:geosite_v2fly.dat:battle"
+        }
+      ],
+      "name": "Игровые сервисы"
+    },
+    {
+      "items": [
+        {
+          "description": "Домены Яндекса",
+          "text": "yandex",
+          "value": "ext:geosite_v2fly.dat:yandex"
+        },
+        {
+          "description": "Домены Mail.ru",
+          "text": "mail-ru",
+          "value": "ext:geosite_v2fly.dat:mail-ru"
+        },
+        {
+          "description": "Домены ВКонтакте",
+          "text": "vk",
+          "value": "ext:geosite_v2fly.dat:vk"
+        },
+        {
+          "description": "Домены Одноклассников",
+          "text": "ok",
+          "value": "ext:geosite_v2fly.dat:ok"
+        },
+        {
+          "description": "Домены QIWI",
+          "text": "qiwi",
+          "value": "ext:geosite_v2fly.dat:qiwi"
+        },
+        {
+          "description": "Российские государственные сайты",
+          "text": "category-gov-ru",
+          "value": "ext:geosite_v2fly.dat:category-gov-ru"
+        }
+      ],
+      "name": "Российские сервисы"
+    },
+    {
+      "items": [
+        {
+          "description": "Домены Dropbox",
+          "text": "dropbox",
+          "value": "ext:geosite_v2fly.dat:dropbox"
+        },
+        {
+          "description": "Домены Microsoft OneDrive",
+          "text": "onedrive",
+          "value": "ext:geosite_v2fly.dat:onedrive"
+        },
+        {
+          "description": "Домены Apple iCloud",
+          "text": "icloud",
+          "value": "ext:geosite_v2fly.dat:icloud"
+        },
+        {
+          "description": "Домены Google Drive",
+          "text": "google-drive",
+          "value": "ext:geosite_v2fly.dat:google-drive"
+        }
+      ],
+      "name": "Облачные сервисы"
+    }
+  ],
+  "geoip_v2fly": [
+    {
+      "items": [
+        {
+          "description": "IP-адреса Cloudflare",
+          "text": "cloudflare",
+          "value": "ext:geoip_v2fly.dat:cloudflare"
+        },
+        {
+          "description": "IP-адреса CloudFront",
+          "text": "cloudfront",
+          "value": "ext:geoip_v2fly.dat:cloudfront"
+        },
+        {
+          "description": "IP-адреса Facebook",
+          "text": "facebook",
+          "value": "ext:geoip_v2fly.dat:facebook"
+        },
+        {
+          "description": "IP-адреса Fastly",
+          "text": "fastly",
+          "value": "ext:geoip_v2fly.dat:fastly"
+        },
+        {
+          "description": "IP-адреса Google",
+          "text": "google",
+          "value": "ext:geoip_v2fly.dat:google"
+        },
+        {
+          "description": "IP-адреса Netflix",
+          "text": "netflix",
+          "value": "ext:geoip_v2fly.dat:netflix"
+        },
+        {
+          "description": "IP-адреса Telegram",
+          "text": "telegram",
+          "value": "ext:geoip_v2fly.dat:telegram"
+        },
+        {
+          "description": "IP-адреса Twitter",
+          "text": "twitter",
+          "value": "ext:geoip_v2fly.dat:twitter"
+        }
+      ],
+      "name": "Сервисы"
+    }
+  ],
+  "antifilter": [
+    {
+      "items": [
+        {
+          "description": "Домены обхода цензуры (основной список)",
+          "text": "antifilter",
+          "value": "ext:geosite_antifilter.dat:antifilter"
+        },
+        {
+          "description": "Домены обхода цензуры (сообщество)",
+          "text": "antifilter-community",
+          "value": "ext:geosite_antifilter.dat:antifilter-community"
+        },
+        {
+          "description": "Специальная категория",
+          "text": "dengi-vdolg-taganrog",
+          "value": "ext:geosite_antifilter.dat:dengi-vdolg-taganrog"
+        },
+        {
+          "description": "Специальная категория",
+          "text": "globa",
+          "value": "ext:geosite_antifilter.dat:globa"
+        }
+      ],
+      "name": "Основные списки"
+    }
+  ],
+  "geosite_zkeen": [
+    {
+      "items": [
+        {
+          "description": "Домены, заблокированные в России",
+          "text": "domains",
+          "value": "ext:geosite_zkeen.dat:domains"
+        },
+        {
+          "description": "Домены, которые сами заблокировали подключения из России",
+          "text": "other",
+          "value": "ext:geosite_zkeen.dat:other"
+        },
+        {
+          "description": "Новостные сайты с независимым контентом",
+          "text": "politic",
+          "value": "ext:geosite_zkeen.dat:politic"
+        },
+        {
+          "description": "Домены YouTube и связанные сервисы",
+          "text": "youtube",
+          "value": "ext:geosite_zkeen.dat:youtube"
+        },
+        {
+          "description": "Домены для direct доступа",
+          "text": "bypass",
+          "value": "ext:geosite_zkeen.dat:bypass"
+        }
+      ],
+      "name": "Заблокированные и недоступные домены"
+    }
+  ],
+  "geoip_zkeen": [
+    {
+      "items": [
+        {
+          "description": "IP-подсети Akamai",
+          "text": "akamai",
+          "value": "ext:geoip_zkeenip.dat:akamai"
+        },
+        {
+          "description": "IP-подсети Amazon (AWS CloudFront)",
+          "text": "amazon",
+          "value": "ext:geoip_zkeenip.dat:amazon"
+        },
+        {
+          "description": "IP-подсети CDN77",
+          "text": "cdn77",
+          "value": "ext:geoip_zkeenip.dat:cdn77"
+        },
+        {
+          "description": "IP-подсети CloudFlare",
+          "text": "cloudflare",
+          "value": "ext:geoip_zkeenip.dat:cloudflare"
+        },
+        {
+          "description": "IP-подсети DigitalOcean",
+          "text": "digitalocean",
+          "value": "ext:geoip_zkeenip.dat:digitalocean"
+        },
+        {
+          "description": "IP-подсети Fastly",
+          "text": "fastly",
+          "value": "ext:geoip_zkeenip.dat:fastly"
+        },
+        {
+          "description": "IP-подсети Hetzner",
+          "text": "hetzner",
+          "value": "ext:geoip_zkeenip.dat:hetzner"
+        },
+        {
+          "description": "IP-подсети Linode",
+          "text": "linode",
+          "value": "ext:geoip_zkeenip.dat:linode"
+        },
+        {
+          "description": "IP-подсети OVH",
+          "text": "ovh",
+          "value": "ext:geoip_zkeenip.dat:ovh"
+        }
+      ],
+      "name": "CDN и облачные провайдеры"
+    },
+    {
+      "items": [
+        {
+          "description": "IP-подсети голосовых серверов Discord",
+          "text": "discord",
+          "value": "ext:geoip_zkeenip.dat:discord"
+        },
+        {
+          "description": "IP-подсети Meta (Facebook, Instagram)",
+          "text": "meta",
+          "value": "ext:geoip_zkeenip.dat:meta"
+        },
+        {
+          "description": "IP-подсети Telegram",
+          "text": "telegram",
+          "value": "ext:geoip_zkeenip.dat:telegram"
+        },
+        {
+          "description": "IP-подсети YouTube",
+          "text": "youtube",
+          "value": "ext:geoip_zkeenip.dat:youtube"
+        }
+      ],
+      "name": "Социальные и коммуникационные сервисы"
+    },
+    {
+      "items": [
+        {
+          "description": "IP-подсети Google (включая Gmail, Drive)",
+          "text": "google",
+          "value": "ext:geoip_zkeenip.dat:google"
+        }
+      ],
+      "name": "Поисковые системы и контент"
+    },
+    {
+      "items": [
+        {
+          "description": "IP-подсети России",
+          "text": "ru",
+          "value": "ext:geoip_zkeenip.dat:ru"
+        }
+      ],
+      "name": "Географические подсети"
+    }
+  ],
+  "geosite_category": [
+    {
+      "items": [
+        {
+          "description": "Доменная зона .ru",
+          "text": ".ru",
+          "value": "regexp:^([\\w\\-\\.]+\\.)ru$"
+        },
+        {
+          "description": "Доменная зона .su",
+          "text": ".su",
+          "value": "regexp:^([\\w\\-\\.]+\\.)su$"
+        },
+        {
+          "description": "Доменная зона .рф",
+          "text": ".рф",
+          "value": "regexp:^([\\w\\-\\.]+\\.)xn--p1ai$"
+        },
+        {
+          "description": "Доменная зона .рус",
+          "text": ".рус",
+          "value": "regexp:^([\\w\\-\\.]+\\.)xn--p1acf$"
+        },
+        {
+          "description": "Доменная зона .онлайн",
+          "text": ".онлайн",
+          "value": "regexp:^([\\w\\-\\.]+\\.)xn--80asehdb$"
+        },
+        {
+          "description": "Доменная зона .орг",
+          "text": ".орг",
+          "value": "regexp:^([\\w\\-\\.]+\\.)xn--c1avg$"
+        },
+        {
+          "description": "Доменная зона .сайт",
+          "text": ".сайт",
+          "value": "regexp:^([\\w\\-\\.]+\\.)xn--80aswg$"
+        },
+        {
+          "description": "Доменная зона .москва",
+          "text": ".москва",
+          "value": "regexp:^([\\w\\-\\.]+\\.)xn--80adxhks$"
+        },
+        {
+          "description": "Доменная зона .moscow",
+          "text": ".moscow",
+          "value": "regexp:^([\\w\\-\\.]+\\.)moscow$"
+        },
+        {
+          "description": "Доменная зона .дети",
+          "text": ".дети",
+          "value": "regexp:^([\\w\\-\\.]+\\.)xn--d1acj3b$"
+        }
+      ],
+      "name": "Российские домены"
+    },
+    {
+      "items": [
+        {
+          "description": "Платежная система VISA",
+          "text": "visa",
+          "value": "ext:geosite_v2fly.dat:visa"
+        },
+        {
+          "description": "Платежная система MasterCard",
+          "text": "mastercard",
+          "value": "ext:geosite_v2fly.dat:mastercard"
+        },
+        {
+          "description": "Платежная система PayPal",
+          "text": "paypal",
+          "value": "ext:geosite_v2fly.dat:paypal"
+        },
+        {
+          "description": "Все платежные системы",
+          "text": "category-payment",
+          "value": "ext:geosite_v2fly.dat:category-payment"
+        }
+      ],
+      "name": "Платежные системы"
+    },
+    {
+      "items": [
+        {
+          "description": "Сайты безопасности",
+          "text": "category-security",
+          "value": "ext:geosite_v2fly.dat:category-security"
+        },
+        {
+          "description": "Обход цензуры",
+          "text": "category-anticensorship",
+          "value": "ext:geosite_v2fly.dat:category-anticensorship"
+        },
+        {
+          "description": "Вредоносные сайты",
+          "text": "category-malware",
+          "value": "ext:geosite_v2fly.dat:category-malware"
+        }
+      ],
+      "name": "Безопасность"
+    },
+    {
+      "items": [
+        {
+          "description": "Чаты и мессенджеры",
+          "text": "category-chat",
+          "value": "ext:geosite_v2fly.dat:category-chat"
+        },
+        {
+          "description": "Социальные сети",
+          "text": "category-social",
+          "value": "ext:geosite_v2fly.dat:category-social"
+        },
+        {
+          "description": "Совместная работа",
+          "text": "category-collaboration",
+          "value": "ext:geosite_v2fly.dat:category-collaboration"
+        }
+      ],
+      "name": "Коммуникации"
+    },
+    {
+      "items": [
+        {
+          "description": "Игровые сайты",
+          "text": "category-games",
+          "value": "ext:geosite_v2fly.dat:category-games"
+        },
+        {
+          "description": "Азартные игры",
+          "text": "category-gambling",
+          "value": "ext:geosite_v2fly.dat:category-gambling"
+        },
+        {
+          "description": "Развлекательные сайты",
+          "text": "category-entertainment",
+          "value": "ext:geosite_v2fly.dat:category-entertainment"
+        }
+      ],
+      "name": "Развлечения"
+    }
+  ],
+  "geosite_region": []
+}

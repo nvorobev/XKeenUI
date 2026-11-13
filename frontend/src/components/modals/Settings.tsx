@@ -178,7 +178,7 @@ const SECTIONS: { id: SectionId; label: string; description: string; icon: Icon 
   { id: 'appearance', label: 'Внешний вид', description: 'Тема и шрифты панели', icon: IconPalette },
   { id: 'editor', label: 'Редактор и журнал', description: 'Визуальный редактор, история изменений и журнал', icon: IconCode },
   { id: 'access', label: 'Доступ и вход', description: 'Защита панели паролем', icon: IconLock },
-  { id: 'protection', label: 'Защита трафика', description: 'Не выпускать трафик мимо прокси', icon: IconShieldLock },
+  { id: 'protection', label: 'Защита трафика', description: 'Блокировка при сбое XKeen или VPN', icon: IconShieldLock },
   { id: 'ping', label: 'Проверка соединений', description: 'Адрес, таймаут и режим теста задержки', icon: IconActivityHeartbeat },
   { id: 'mihomo', label: 'Mihomo', description: 'Селекторы, соединения и DNS для ядра Mihomo', icon: IconAdjustmentsHorizontal },
   { id: 'updates', label: 'Ядра и обновления', description: 'Автопроверка, источники и прокси для загрузки', icon: IconRefresh },
@@ -917,14 +917,14 @@ type TrafficGuardStatus = {
   health?: { blocked: boolean; vpn: string | null; error: string | null }
 }
 
-function TrafficGuardHelp({ ports }: { ports: string }) {
+function TrafficGuardHelp() {
   return (
     <Popover>
       <PopoverTrigger
         render={
           <button
             type="button"
-            aria-label="Для чего нужна блокировка трафика мимо прокси"
+            aria-label="Как работают переключатель и режим защиты трафика"
             className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex rounded-full align-middle outline-none focus-visible:ring-3"
           />
         }
@@ -933,13 +933,16 @@ function TrafficGuardHelp({ ports }: { ports: string }) {
       </PopoverTrigger>
       <PopoverContent side="bottom" align="start" className="w-80 gap-2 text-[13px] leading-relaxed">
         <p>
-          Устройства из политики доступа XKeen ходят на проксируемые порты ({ports}) через Xray. Если XKeen остановлен, ядро упало или
-          роутер ещё загружается, перехвата нет, и этот трафик уходит в интернет напрямую через провайдера.
+          Переключатель включает или выключает защиту целиком. Список ниже выбирает, при каком сбое блокировать интернет. Пока защита
+          выключена, список недоступен; выбранный режим сохраняется.
         </p>
-        <p>С этой опцией такой трафик отбрасывается: без работающего прокси сайты не откроются, но и ваш реальный IP не утечёт.</p>
+        <p>
+          Если нужно блокировать и прямые маршруты (direct) при отказе VPN-сервера, выберите «Если недоступен VPN (включая direct)». Режим
+          «Если не работает XKeen» этого не делает.
+        </p>
         <p className="text-muted-foreground">
-          Не затрагивает: остальные порты этих устройств, устройства вне политики XKeen, локальную сеть, адреса из исключений XKeen и
-          запросы самого роутера. Пока прокси работает, правило ничего не блокирует.
+          Защита относится только к устройствам политики XKeen. Локальная сеть и доступ к панели сохраняются. Устройства вне этой политики и
+          собственные запросы роутера не блокируются.
         </p>
       </PopoverContent>
     </Popover>
@@ -991,7 +994,7 @@ function TrafficGuardField({ showToast }: { showToast: (msg: string, type?: 'suc
         ++requestId.current
         setStatus(result)
         setLoadError(null)
-        showToast(enabled ? 'Блокировка трафика мимо прокси включена' : 'Блокировка трафика мимо прокси выключена', 'success')
+        showToast(enabled ? 'Настройки защиты трафика применены' : 'Защита трафика выключена', 'success')
       } catch (e) {
         showToast((e as Error).message, 'error')
       } finally {
@@ -1011,13 +1014,13 @@ function TrafficGuardField({ showToast }: { showToast: (msg: string, type?: 'suc
   return (
     <SettingsGroup>
       <SettingRow
-        label="Блокировать трафик мимо прокси"
-        labelAddon={<TrafficGuardHelp ports={ports} />}
+        label="Включить защиту трафика"
+        labelAddon={<TrafficGuardHelp />}
         htmlFor="traffic-guard"
         description={
-          status?.mode === 'strict'
-            ? 'Блокировать весь интернет устройств политики XKeen, когда VPN недоступен'
-            : `Если XKeen не работает, устройства из его политики не выйдут в интернет напрямую на портах ${ports}`
+          status?.enabled
+            ? 'Защита включена для устройств политики XKeen. Условия блокировки задаются режимом ниже.'
+            : 'Защита выключена. Включите переключатель, чтобы использовать защиту и выбрать её режим ниже. Выбранный режим сохраняется при выключении.'
         }
       >
         <Switch
@@ -1025,29 +1028,29 @@ function TrafficGuardField({ showToast }: { showToast: (msg: string, type?: 'suc
           checked={status?.enabled ?? false}
           disabled={pending || !status || (!status.supported && !status.enabled)}
           onCheckedChange={(enabled) => void toggle(enabled)}
-          aria-label="Блокировать трафик мимо прокси"
+          aria-label="Включить защиту трафика"
         />
       </SettingRow>
       <SettingRow
-        label="Режим защиты"
+        label="Когда блокировать интернет"
         htmlFor="traffic-guard-mode"
         description={
           status?.mode === 'strict'
-            ? 'При недоступном VPN блокируется весь интернет устройств политики XKeen, включая direct и любые порты. Локальная сеть и панель доступны. Проверка каждые 5 секунд; блокировка включается после неуспешной проверки, снимается после успешной.'
-            : 'Блокирует обход перехвата XKeen на проксируемых портах. Маршруты direct при работающем ядре доступны.'
+            ? 'Проверяет доступ в интернет через выбранный VPN. После неуспешной проверки блокирует интернет устройств политики XKeen, включая прямые маршруты (direct), любые порты и IPv6. Блокируются и новые запросы, и передача данных в уже открытых соединениях. Локальная сеть и панель остаются доступны.\nПосле успешной проверки доступ восстанавливается автоматически. Новая проверка начинается через 5 секунд после завершения предыдущей; обнаружение сбоя занимает время.'
+            : `Блокирует прямой выход мимо перехвата XKeen на портах: ${ports}. Это защищает при остановке, сбое или незапуске XKeen. Исключения XKeen сохраняются.\nЕсли XKeen работает, но VPN-сервер недоступен, прямые маршруты (direct) продолжают работать. Этот режим не проверяет доступность VPN-сервера.`
         }
-        layout="responsive"
+        layout="stacked"
       >
         <OptionSelect
           id="traffic-guard-mode"
-          disabled={pending || !status}
+          disabled={pending || !status?.enabled}
           value={status?.mode ?? 'proxy'}
           options={[
-            { value: 'proxy', label: 'Защита от обхода' },
-            { value: 'strict', label: 'Весь интернет только при доступном VPN' },
+            { value: 'proxy', label: 'Если не работает XKeen' },
+            { value: 'strict', label: 'Если недоступен VPN (включая direct)' },
           ]}
           onValueChange={(mode) => {
-            if (!pending && status) void toggle(status.enabled, mode as 'proxy' | 'strict')
+            if (!pending && status?.enabled) void toggle(true, mode as 'proxy' | 'strict')
           }}
         />
       </SettingRow>
@@ -1056,18 +1059,18 @@ function TrafficGuardField({ showToast }: { showToast: (msg: string, type?: 'suc
           label="Проверяемый VPN"
           htmlFor="traffic-guard-target"
           description="Выберите сервер или группу. Прямой выход не считается работающим VPN."
-          layout="responsive"
+          layout="stacked"
         >
           <OptionSelect
             id="traffic-guard-target"
-            disabled={pending}
+            disabled={pending || !status.enabled}
             value={status.target || '__none__'}
             options={[
               { value: '__none__', label: 'Выберите VPN' },
               ...(status.targets ?? []).map((name) => ({ value: name, label: name })),
             ]}
             onValueChange={(target) => {
-              if (!pending) void toggle(status.enabled, 'strict', target === '__none__' ? '' : target)
+              if (!pending && status.enabled) void toggle(true, 'strict', target === '__none__' ? '' : target)
             }}
           />
         </SettingRow>

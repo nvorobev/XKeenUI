@@ -34,6 +34,7 @@ import {
   needsRestart,
   newServerId,
   rangeError,
+  settingsEqual,
   withHistory,
   type Candidates,
   type Outbound,
@@ -81,7 +82,7 @@ export function XrayServers({ onChanged, hasUnsavedConfigs }: { onChanged: () =>
     if (force || !dirtyRef.current) {
       const stored = draftFromSnapshot(next)
       baseSelectedRef.current = stored.selected_id
-      const pending = !!next.settings && JSON.stringify(stored) !== JSON.stringify(next.settings)
+      const pending = !!next.settings && !settingsEqual(stored, next.settings)
       dirtyRef.current = pending
       setDirty(pending)
       setDraft(stored)
@@ -141,8 +142,9 @@ export function XrayServers({ onChanged, hasUnsavedConfigs }: { onChanged: () =>
 
   function update(next: Settings) {
     setDraft(next)
-    setDirty(true)
-    dirtyRef.current = true
+    const changed = !settingsEqual(next, snapshot?.settings ?? defaults)
+    setDirty(changed)
+    dirtyRef.current = changed
   }
 
   function discard() {
@@ -275,7 +277,7 @@ export function XrayServers({ onChanged, hasUnsavedConfigs }: { onChanged: () =>
     if (!saved) return draft.servers.length
     const removed = saved.servers.filter((s) => !draft.servers.some((d) => d.id === s.id)).length
     const servers = draft.servers.filter((s) => draftStatus(s, saved)).length + removed
-    return servers + (JSON.stringify({ ...draft, servers: [] }) !== JSON.stringify({ ...saved, servers: [] }) ? 1 : 0)
+    return servers + (!settingsEqual({ ...draft, servers: [] }, { ...saved, servers: [] }) ? 1 : 0)
   }, [draft, saved])
 
   function serverFor(tag: string): Server | undefined {
@@ -428,8 +430,8 @@ export function XrayServers({ onChanged, hasUnsavedConfigs }: { onChanged: () =>
   }
 
   const inPool = draft.servers.length
-  const unsavedPoolChanges = JSON.stringify(draft) !== JSON.stringify(draftFromSnapshot(snapshot))
-  const canSave = dirty && !blocked && inPool > 0 && !!draft.target_tag && !invalidRange
+  const unsavedPoolChanges = !settingsEqual(draft, draftFromSnapshot(snapshot))
+  const canSave = dirty && changes > 0 && !blocked && inPool > 0 && !!draft.target_tag && !invalidRange
   const checkingAll = checking.size > 0 && checking.size >= rows.length
   const pendingActiveId = draft.selected_id !== liveActiveId ? draft.selected_id : ''
   const saveLabel = configured

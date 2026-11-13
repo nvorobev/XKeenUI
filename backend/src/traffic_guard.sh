@@ -9,7 +9,7 @@
 # XKeen остановлен, ядро упало или роутер ещё загружается.
 #
 # Метка политики, порты и исключения берутся из хука XKeen (proxy.sh).
-# Строгий режим дополнительно блокирует INPUT/FORWARD на всех портах при отсутствии
+# Строгий режим дополнительно блокирует INPUT/FORWARD/OUTPUT на всех портах при отсутствии
 # свежей успешной проверки VPN. Аргумент «remove» снимает оба вида правил.
 
 chain="xkeen_ui_guard"
@@ -55,10 +55,10 @@ read_excludes() {
     fi
 }
 
-# Снимает переходы из FORWARD в цепочку и удаляет её.
+# Снимает переходы в цепочку и удаляет её.
 drop_chain() {
     local family="$1" name="$2" parent
-    for parent in FORWARD INPUT; do
+    for parent in FORWARD INPUT OUTPUT; do
         "$family" -w -S "$parent" 2>/dev/null | grep -- "-j $name\$" | sed 's/^-A /-D /' | while read -r rule; do
             # shellcheck disable=SC2086
             "$family" -w $rule >/dev/null 2>&1
@@ -188,7 +188,6 @@ apply_strict() {
     name="${strict_chain}_new"
     drop_chain "$family" "$name"
     "$family" -w -N "$name" || return 1
-    "$family" -w -A "$name" -m conntrack --ctdir REPLY -j RETURN || return 1
     if [ "$family" = "ip6tables" ]; then
         # Neighbor discovery is untracked; original-destination matches alone would
         # break IPv6 LAN access while the gate is closed. TCP/UDP REDIRECT still
@@ -206,10 +205,17 @@ apply_strict() {
         "$family" -w -A "$name" -m conntrack --ctorigdst "$net" -j RETURN || return 1
     done
     "$family" -w -A "$name" -j "$strict_gate" || return 1
-    for parent in INPUT FORWARD; do
+    for parent in INPUT FORWARD OUTPUT; do
+        # INPUT sees client requests to a transparent proxy; OUTPUT sees its replies.
+        # Router-originated probes must remain possible, including their INPUT replies.
+        case "$parent" in
+            INPUT) set -- -m conntrack --ctdir ORIGINAL ;;
+            OUTPUT) set -- -m conntrack --ctdir REPLY ;;
+            *) set -- ;;
+        esac
         # A TPROXY packet's fwmark may have been replaced; keep matching its connection mark.
-        "$family" -w -I "$parent" 1 -m connmark --mark "$policy_mark" -j "$name" || return 1
-        "$family" -w -I "$parent" 1 -m mark --mark "$policy_mark" -j "$name" || return 1
+        "$family" -w -I "$parent" 1 "$@" -m connmark --mark "$policy_mark" -j "$name" || return 1
+        "$family" -w -I "$parent" 1 "$@" -m mark --mark "$policy_mark" -j "$name" || return 1
     done
     drop_chain "$family" "$strict_chain"
     "$family" -w -E "$name" "$strict_chain" || return 1
@@ -315,8 +321,18 @@ if [ "$1" = "tick" ]; then
     if is_strict; then
         # No repeated rule rebuilds in the steady state.
         for family in iptables ip6tables; do
-            if ! "$family" -w -C INPUT -m connmark --mark "$policy_mark" -j "$strict_chain" >/dev/null 2>&1 ||
-               ! "$family" -w -C FORWARD -m connmark --mark "$policy_mark" -j "$strict_chain" >/dev/null 2>&1; then
+            rebuild=false
+            for parent in INPUT FORWARD OUTPUT; do
+                case "$parent" in
+                    INPUT) set -- -m conntrack --ctdir ORIGINAL ;;
+                    OUTPUT) set -- -m conntrack --ctdir REPLY ;;
+                    *) set -- ;;
+                esac
+                for match in connmark mark; do
+                    "$family" -w -C "$parent" "$@" -m "$match" --mark "$policy_mark" -j "$strict_chain" >/dev/null 2>&1 || rebuild=true
+                done
+            done
+            if [ "$rebuild" = true ]; then
                 apply_strict "$family" || exit 1
             else
                 sync_gate "$family" || exit 1

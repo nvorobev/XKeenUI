@@ -59,9 +59,16 @@ export const defaults: Settings = {
 export function draftFromSnapshot(snapshot: Snapshot | null): Settings {
   if (!snapshot?.settings) return defaults
   return {
-    ...defaults,
-    ...snapshot.settings,
+    ...normalizeSettings(snapshot.settings),
     servers: snapshot.settings.servers.map((server) => snapshot.servers.find((s) => s.id === server.id) ?? server),
+  }
+}
+
+function normalizeSettings(settings: Settings): Settings {
+  return {
+    ...defaults,
+    ...settings,
+    interval_ms: settings.interval_ms ?? (settings.interval_secs ?? defaults.interval_secs) * 1000,
   }
 }
 
@@ -115,7 +122,21 @@ export function rangeError(settings: Settings): string {
   return ''
 }
 
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+// JSON object key order is irrelevant; server and routing array order is meaningful.
+function same(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false
+  if (Array.isArray(a) || Array.isArray(b))
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, i) => same(value, b[i]))
+  const left = a as Record<string, unknown>
+  const right = b as Record<string, unknown>
+  const keys = Object.keys(left)
+  return keys.length === Object.keys(right).length && keys.every((key) => Object.hasOwn(right, key) && same(left[key], right[key]))
+}
+
+export function settingsEqual(a: Settings, b: Settings): boolean {
+  return same(normalizeSettings(a), normalizeSettings(b))
+}
 
 export function draftStatus(server: Server, saved: Settings | null): DraftStatus {
   if (!saved) return null

@@ -1,9 +1,12 @@
 use crate::logger::log;
 use crate::types::{APP_CONFIG, ApiResponse, AppState, MIHOMO_CONF_DIR, XKEEN_CONF_DIR, XRAY_CONF_DIR};
 use axum::Json;
-use axum::extract::State;
+use axum::body::Body;
+use axum::extract::{Query, State};
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use chrono::{DateTime, FixedOffset, Offset, Utc};
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -11,6 +14,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 use tar::{Archive, Builder};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn mtime_string(time: Result<SystemTime, std::io::Error>, tz: i32) -> String {
     let secs = time
@@ -29,6 +33,24 @@ fn mtime_string(time: Result<SystemTime, std::io::Error>, tz: i32) -> String {
 const BACKUP_DIR: &str = "/opt/backups";
 const BACKUP_SUFFIX: &str = "xkeen-ui.tar";
 const CONTENT_ORDER: [&str; 4] = ["xkeen", "xkeen-ui", "xray", "mihomo"];
+const MAX_UPLOAD_BYTES: u64 = 32 * 1024 * 1024;
+
+#[derive(Deserialize)]
+pub struct BackupFileQuery {
+    name: String,
+}
+
+// Also remove partial uploads when the request is cancelled/disconnected.
+struct UploadFile(PathBuf);
+
+impl Drop for UploadFile {
+    fn drop(&mut self) {
+        let path = self.0.clone();
+        tokio::spawn(async move {
+            let _ = tokio::fs::remove_file(path).await;
+        });
+    }
+}
 
 #[derive(Serialize)]
 struct BackupListData {
@@ -132,6 +154,114 @@ pub async fn put_backup(State(state): State<AppState>) -> impl IntoResponse {
         "Не удалось создать бэкап",
     )
     .await
+}
+
+pub async fn download_backup(Query(req): Query<BackupFileQuery>) -> axum::response::Response {
+    let opened = tokio::task::spawn_blocking(move || {
+        let path = resolve_backup_path(&req.name)?;
+        if fs::symlink_metadata(&path).map_err(io_error)?.file_type().is_symlink() {
+            return Err("нельзя скачать символическую ссылку".to_string());
+        }
+        let file = File::open(&path).map_err(io_error)?;
+        let size = file.metadata().map_err(io_error)?.len();
+        Ok((file, size, req.name))
+    })
+    .await;
+    let (file, size, name) = match opened {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => return (StatusCode::BAD_REQUEST, api_error(error)).into_response(),
+        Err(error) => return (StatusCode::INTERNAL_SERVER_ERROR, api_error(error.to_string())).into_response(),
+    };
+    let stream = futures_util::stream::try_unfold(tokio::fs::File::from_std(file), |mut file| async move {
+        let mut chunk = vec![0; 32 * 1024];
+        let len = file.read(&mut chunk).await?;
+        chunk.truncate(len);
+        Ok::<_, io::Error>((len > 0).then_some((chunk, file)))
+    });
+    (
+        [
+            (header::CONTENT_TYPE, "application/x-tar".to_string()),
+            (header::CONTENT_LENGTH, size.to_string()),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!(
+                    "attachment; filename=\"xkeen-ui-backup.tar\"; filename*=UTF-8''{}",
+                    urlencoding::encode(&name)
+                ),
+            ),
+        ],
+        Body::from_stream(stream),
+    )
+        .into_response()
+}
+
+pub async fn upload_backup(State(state): State<AppState>, body: Body) -> axum::response::Response {
+    let tz = state
+        .settings
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .log
+        .timezone;
+    if let Err(error) = tokio::fs::create_dir_all(BACKUP_DIR).await {
+        return api_error(error.to_string()).into_response();
+    }
+    let staged = UploadFile(Path::new(BACKUP_DIR).join(format!(".upload-{}.tmp", uuid::Uuid::new_v4())));
+    let received = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&staged.0)
+            .await
+            .map_err(io_error)?;
+        let mut stream = body.into_data_stream();
+        let mut size = 0_u64;
+        while let Some(chunk) = stream.try_next().await.map_err(|e| e.to_string())? {
+            size += chunk.len() as u64;
+            if size > MAX_UPLOAD_BYTES {
+                return Err("архив должен быть не больше 32 МБ".to_string());
+            }
+            file.write_all(&chunk).await.map_err(io_error)?;
+        }
+        if size == 0 {
+            return Err("архив пустой".to_string());
+        }
+        file.sync_all().await.map_err(io_error)?;
+        Ok::<_, String>(())
+    })
+    .await;
+    match received {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return api_error(error).into_response(),
+        Err(_) => return api_error("Время загрузки архива истекло".into()).into_response(),
+    }
+    run_blocking(
+        tokio::task::spawn_blocking(move || {
+            validate_backup_entries(&staged.0)?;
+            let content = inspect_backup_content(&staged.0).map_err(io_error)?;
+            let name = format!(
+                "{}_import-{}_{BACKUP_SUFFIX}",
+                backup_now(tz).format("%Y-%m-%d_%H-%M-%S"),
+                uuid::Uuid::new_v4()
+            );
+            let path = Path::new(BACKUP_DIR).join(&name);
+            fs::rename(&staged.0, &path).map_err(io_error)?;
+            let metadata = fs::metadata(&path).map_err(io_error)?;
+            log("INFO", format!("Резервная копия загружена: {}", path.display()));
+            Ok(Some(BackupData {
+                backup: BackupItem {
+                    name,
+                    mtime: mtime_string(metadata.modified(), tz),
+                    size: metadata.len(),
+                    content,
+                },
+            }))
+        }),
+        "Не удалось загрузить копию",
+    )
+    .await
+    .into_response()
 }
 
 pub async fn post_backup(State(state): State<AppState>, Json(req): Json<BackupReq>) -> impl IntoResponse {
@@ -478,7 +608,7 @@ fn validate_backup_entries(path: &Path) -> Result<(), String> {
     let mut has_files = false;
 
     for entry in entries {
-        let entry = entry.map_err(io_error)?;
+        let mut entry = entry.map_err(io_error)?;
         if !entry.header().entry_type().is_file() {
             return Err("архив содержит неподдерживаемые записи".into());
         }
@@ -491,6 +621,11 @@ fn validate_backup_entries(path: &Path) -> Result<(), String> {
         }
         if !seen.insert(relative) {
             return Err("архив содержит дубликаты файлов".into());
+        }
+        // Read payloads too: a valid header must not hide truncated file contents.
+        let expected = entry.size();
+        if io::copy(&mut entry, &mut io::sink()).map_err(io_error)? != expected {
+            return Err("архив обрезан".into());
         }
         has_files = true;
     }
@@ -529,7 +664,7 @@ fn detect_content_key(relative: &str) -> Option<&'static str> {
     let check_prefix = |prefix: &str, exts: &[&str]| {
         relative
             .strip_prefix(prefix.trim_start_matches('/'))
-            .map(|rest| rest.trim_start_matches('/'))
+            .and_then(|rest| rest.strip_prefix('/'))
             .filter(|name| !name.contains('/') && matches_file_name(name, exts))
     };
 
@@ -688,6 +823,26 @@ fn backup_offset(tz: i32) -> FixedOffset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_archive_paths_stay_inside_configuration_directories() {
+        for path in [
+            "opt/etc/xkeen/ip_exclude.lst",
+            "opt/etc/xkeen/xkeen-ui.json",
+            "opt/etc/xray/configs/04_outbounds.json",
+            "opt/etc/mihomo/config.yaml",
+        ] {
+            assert!(archive_relative_to_target(path).is_some(), "{path}");
+        }
+        for path in [
+            "opt/etc/xkeen-other.json",
+            "opt/etc/xray/configs-escape.json",
+            "opt/etc/mihomo-other.yaml",
+            "etc/passwd",
+        ] {
+            assert!(archive_relative_to_target(path).is_none(), "{path}");
+        }
+    }
 
     #[test]
     fn restored_panel_settings_keep_current_access() {

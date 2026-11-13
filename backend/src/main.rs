@@ -629,6 +629,8 @@ async fn main() {
                 .patch(backuper::patch_backup)
                 .delete(backuper::delete_backup),
         )
+        .route("/api/backup/download", get(backuper::download_backup))
+        .route("/api/backup/upload", post(backuper::upload_backup))
         .route(
             "/api/settings",
             get(settings::get_settings).patch(settings::patch_settings),

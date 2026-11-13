@@ -6,6 +6,7 @@ Optional third argument: real Mihomo binary. No router, external proxy, or Inter
 """
 import http.cookiejar
 import http.server
+import io
 import json
 import os
 from pathlib import Path
@@ -13,9 +14,11 @@ import signal
 import socket
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -613,8 +616,93 @@ sys.exit(status)
             assert outside['success'] is False and 'session' not in json.dumps(outside), outside
             print('PASS: real Mihomo VLESS/REALITY parsing, selector/fallback/url-test/load-balance groups, API relay, traffic switching, connections, restart and core-switch rollback', flush=True)
 
+        ok('PATCH','settings',{'auth':{'enabled':True}})
+        ok('POST','auth/login',{'username':'admin','password':'replacement-password'})
         backup = ok('PUT', 'backup')['backup']['name']
         assert any(item['name'] == backup for item in ok('GET', 'backup')['backups'])
+        def download(name):
+            endpoint = 'backup/download?name=' + urllib.parse.quote(name)
+            with client.open(url + endpoint, timeout=10) as response:
+                data = response.read()
+                assert response.headers['Content-Type'] == 'application/x-tar'
+                assert response.headers['Cache-Control'] == 'no-store'
+                assert "filename*=UTF-8''" + urllib.parse.quote(name, safe='') in response.headers['Content-Disposition']
+                assert int(response.headers['Content-Length']) == len(data)
+                return data
+
+        def upload(data, chunked=False):
+            body = (data[i:i+32768] for i in range(0,len(data),32768)) if chunked else data
+            req = urllib.request.Request(url + 'backup/upload',method='POST',data=body,
+                                         headers={'Content-Type':'application/x-tar'})
+            with client.open(req,timeout=30) as response: return json.load(response)
+
+        original = download(backup)
+        assert original == Path('/opt/backups',backup).read_bytes()
+        before_import = config.read_bytes()
+        changed_config = '{"outbounds":[{"tag":"direct","protocol":"freedom"}]}'
+        config.write_text(changed_config)
+        imported = upload(original,chunked=True)
+        assert imported['success'],imported
+        imported = imported['backup']['name']
+        assert imported != backup
+        assert config.read_text() == changed_config, 'Uploading must not apply/restore files'
+        assert download(imported) == original
+        assert any(item['name'] == imported for item in ok('GET','backup')['backups'])
+        ok('POST','backup',{'name':imported,'contents':['xray']})
+        assert config.read_bytes() == before_import
+        ok('PATCH','users/admin',{'password':'transfer-target-password'})
+        ok('POST','auth/login',{'username':'admin','password':'transfer-target-password'})
+        target_auth=json.loads(Path('/opt/etc/xkeen/xkeen-ui.json').read_text())['auth']
+        ok('POST','backup',{'name':imported})
+        assert json.loads(Path('/opt/etc/xkeen/xkeen-ui.json').read_text())['auth'] == target_auth
+        unicode_name = 'Копия_с_другого_роутера_xkeen-ui.tar'
+        ok('PATCH','backup',{'name':imported,'new_name':unicode_name})
+        assert download(unicode_name) == original
+        ok('DELETE','backup',{'name':unicode_name})
+
+        # Upload validation must reject dangerous or damaged archives before publishing them.
+        def archive(entries):
+            data=io.BytesIO()
+            with tarfile.open(fileobj=data,mode='w') as tar:
+                for name,kind in entries:
+                    entry=tarfile.TarInfo(name)
+                    if kind=='link': entry.type=tarfile.SYMTYPE;entry.linkname='/etc/passwd';tar.addfile(entry)
+                    else: entry.size=2;tar.addfile(entry,io.BytesIO(b'{}'))
+            return data.getvalue()
+        path='opt/etc/xray/configs/04_outbounds.json'
+        invalid = [b'not a tar archive',b'',archive([('../escape.json','file')]),
+                   archive([('etc/passwd','file')]),archive([('opt/etc/xray/configs-escape.json','file')]),
+                   archive([(path,'link')]),
+                   archive([(path,'file'),(path,'file')]),archive([(path,'file')])[:513]]
+        before=ok('GET','backup')['backups']
+        for data in invalid: assert upload(data)['success'] is False
+        assert ok('GET','backup')['backups'] == before
+        assert config.read_bytes() == before_import
+        # Raw streaming accepts archives above Axum's default 2 MiB JSON body limit.
+        large=io.BytesIO()
+        with tarfile.open(fileobj=large,mode='w') as tar:
+            content=b'# fixture\n'*(230000)
+            entry=tarfile.TarInfo('opt/etc/xkeen/ip_exclude.lst');entry.size=len(content)
+            tar.addfile(entry,io.BytesIO(content))
+        uploaded=upload(large.getvalue(),chunked=True)
+        assert uploaded['success'],uploaded
+        assert download(uploaded['backup']['name']) == large.getvalue()
+        ok('DELETE','backup',{'name':uploaded['backup']['name']})
+        # A backup-looking name cannot turn export into a general file reader.
+        symlink=Path('/opt/backups/link_xkeen-ui.tar');symlink.symlink_to('/etc/passwd')
+        for name in ['../xkeen-ui.tar',symlink.name]:
+            try:
+                client.open(url+'backup/download?name='+urllib.parse.quote(name,safe=''),timeout=10)
+                raise AssertionError('Download followed an unsafe path')
+            except urllib.error.HTTPError as error: assert error.code == 400
+        symlink.unlink()
+        for endpoint,method in [('backup/download?name='+backup,'GET'),('backup/upload','POST')]:
+            try:
+                urllib.request.urlopen(urllib.request.Request(url+endpoint,method=method,
+                    data=original if method=='POST' else None),timeout=10)
+                raise AssertionError('Archive transfer allowed without login')
+            except urllib.error.HTTPError as error: assert error.code == 401
+        print('PASS: binary backup export, chunked import, explicit restore, Unicode filename, validation and authentication',flush=True)
         renamed = 'smoke_xkeen-ui.tar'
         ok('PATCH', 'backup', {'name': backup, 'new_name': renamed})
         ok('POST', 'backup', {'name': renamed, 'contents': ['xray']})

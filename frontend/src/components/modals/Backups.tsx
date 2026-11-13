@@ -27,16 +27,19 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { apiCall } from '@/lib/api'
+import { downloadBackupFile, uploadBackupFile } from '@/lib/backupTransfer'
 import { useAppContext } from '@/lib/store'
 import {
   IconAlertTriangle,
   IconBoxOff,
   IconChevronDown,
+  IconDownload,
   IconFileZip,
   IconPencil,
   IconPlus,
   IconRestore,
   IconTrash,
+  IconUpload,
 } from '@tabler/icons-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Panel } from '../shell/Panel'
@@ -110,6 +113,7 @@ export function BackupsPage({ onRefreshConfigs }: Props) {
   const [renamingName, setRenamingName] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const renameSubmittingRef = useRef(false)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
 
   const fetchBackups = useCallback(async () => {
     const result = await apiCall<BackupsResponse>('GET', 'backup')
@@ -117,6 +121,40 @@ export function BackupsPage({ onRefreshConfigs }: Props) {
     const items = Array.isArray(result.backups) ? result.backups : []
     return items.sort((a, b) => b.mtime.localeCompare(a.mtime))
   }, [])
+
+  async function downloadBackup(name: string) {
+    if (pendingAction !== null) return
+    setPendingAction(`download:${name}`)
+    try {
+      const blob = await downloadBackupFile(name)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = name
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Не удалось скачать копию', 'error')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  async function uploadBackup(file: File) {
+    if (pendingAction !== null) return
+    setPendingAction('upload')
+    try {
+      await uploadBackupFile(file)
+      setBackups(await fetchBackups())
+      showToast('Копия загружена. Нажмите «Восстановить» у неё в списке.')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Не удалось загрузить копию', 'error')
+    } finally {
+      setPendingAction(null)
+    }
+  }
 
   const loadBackups = useCallback(
     async (silent = false) => {
@@ -243,7 +281,11 @@ export function BackupsPage({ onRefreshConfigs }: Props) {
         }
         setConfirmAction(null)
         await onRefreshConfigs()
-        showToast(contents?.length ? `Восстановлено: ${formatContentList(contents)}` : 'Копия восстановлена')
+        showToast(
+          contents?.length
+            ? `Файлы ${formatContentList(contents)} восстановлены. Перезапустите соответствующую службу для применения.`
+            : 'Файлы восстановлены. Перезапустите XKeen и панель для применения настроек.'
+        )
       } catch (error: any) {
         showToast(error.message ?? 'Не удалось восстановить копию', 'error')
       } finally {
@@ -288,10 +330,41 @@ export function BackupsPage({ onRefreshConfigs }: Props) {
         <header className="flex flex-col gap-1">
           <h1 className="text-xl font-bold tracking-wider uppercase">Резервные копии</h1>
           <p className="text-muted-foreground text-sm">
-            Конфигурации XKeen, XKeen UI, Xray и Mihomo. Восстановление перезапишет текущие файлы.
+            Скачайте копию на компьютер или загрузите архив с другого роутера. После загрузки выберите «Восстановить» в списке.
+            Восстановление перезапишет текущие файлы конфигураций XKeen, XKeen UI, Xray и Mihomo.
           </p>
         </header>
-        <Panel title="Копии конфигураций" id="maintenance-backups">
+        <Panel
+          title="Копии конфигураций"
+          id="maintenance-backups"
+          actions={
+            <Button
+              variant="outline"
+              disabled={pendingAction !== null || isLoading || renamingName !== null}
+              onClick={() => uploadInputRef.current?.click()}
+            >
+              {pendingAction === 'upload' ? <Spinner data-icon="inline-start" /> : <IconUpload data-icon="inline-start" />}
+              Загрузить копию
+            </Button>
+          }
+        >
+          <Input
+            ref={uploadInputRef}
+            type="file"
+            accept=".tar,application/x-tar"
+            className="hidden"
+            aria-label="Архив резервной копии"
+            disabled={pendingAction !== null}
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              event.target.value = ''
+              if (file) void uploadBackup(file)
+            }}
+          />
+          <p className="text-muted-foreground text-sm">
+            Архив .tar, до 32 МБ. Загрузка добавляет копию в список и не меняет текущие настройки. После восстановления перезапустите XKeen,
+            а для настроек панели — саму панель.
+          </p>
           <div>
             {isLoading ? (
               <ul aria-busy="true" aria-label="Загрузка резервных копий" className="divide-y rounded-lg border">
@@ -382,7 +455,20 @@ export function BackupsPage({ onRefreshConfigs }: Props) {
                         </div>
                       </div>
 
-                      <div className="flex shrink-0 items-center justify-end gap-1">
+                      <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={pendingAction !== null || renamingName !== null}
+                          onClick={() => void downloadBackup(backup.name)}
+                        >
+                          {pendingAction === `download:${backup.name}` ? (
+                            <Spinner data-icon="inline-start" />
+                          ) : (
+                            <IconDownload data-icon="inline-start" />
+                          )}
+                          Скачать
+                        </Button>
                         <ButtonGroup>
                           <Button
                             variant="outline"

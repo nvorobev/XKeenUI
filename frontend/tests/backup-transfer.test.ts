@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
-import { downloadBackupFile, uploadBackupFile } from '../src/lib/backupTransfer'
+import { downloadBackupFile, restoreBackupAndWait, uploadBackupFile } from '../src/lib/backupTransfer'
 
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
@@ -30,4 +30,25 @@ test('invalid uploads surface the validation error instead of reporting success'
   globalThis.fetch = (async () => Response.json({ success: false, error: 'Архив повреждён' })) as typeof fetch
   await expect(uploadBackupFile(new File(['invalid'], 'backup.tar'))).rejects.toThrow('Архив повреждён')
   await expect(uploadBackupFile(new File([], 'empty.tar'))).rejects.toThrow('Архив пустой')
+})
+
+test('restore recovers its actual result after the POST connection is lost', async () => {
+  let operation = ''
+  globalThis.fetch = (async (url, options) => {
+    if (options?.method === 'POST') {
+      const body = JSON.parse(options.body as string)
+      expect(body.name).toBe('source_xkeen-ui.tar')
+      operation = body.operation_id
+      expect(operation).toMatch(/^[a-f0-9]{32}$/)
+      throw new TypeError('connection closed during restart')
+    }
+    expect(url).toBe('/api/backup/restore-status')
+    return Response.json({ success: true, restore: { operation_id: operation, phase: 'done', panel_restarting: true } })
+  }) as typeof fetch
+  expect(await restoreBackupAndWait('source_xkeen-ui.tar')).toEqual({ panel_restarting: true })
+})
+
+test('a failed restore is shown as an error without pretending it applied', async () => {
+  globalThis.fetch = (async () => Response.json({ success: false, error: 'Xray отклонил конфигурацию' })) as typeof fetch
+  await expect(restoreBackupAndWait('source_xkeen-ui.tar')).rejects.toThrow('Xray отклонил конфигурацию')
 })

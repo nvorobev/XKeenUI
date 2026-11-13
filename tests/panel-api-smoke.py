@@ -618,6 +618,7 @@ sys.exit(status)
 
         ok('PATCH','settings',{'auth':{'enabled':True}})
         ok('POST','auth/login',{'username':'admin','password':'replacement-password'})
+        ok('PATCH','settings',{'log':{'timezone':4}})
         backup = ok('PUT', 'backup')['backup']['name']
         assert any(item['name'] == backup for item in ok('GET', 'backup')['backups'])
         def download(name):
@@ -636,6 +637,45 @@ sys.exit(status)
                                          headers={'Content-Type':'application/x-tar'})
             with client.open(req,timeout=30) as response: return json.load(response)
 
+        def restore(name, contents=None, failed=False, disconnect=False):
+            operation=str(uuid.uuid4())
+            body={'name':name,'operation_id':operation}
+            if contents: body['contents']=contents
+            if disconnect:
+                Path('/opt/slow-restart').write_text('2')
+                data=json.dumps(body).encode()
+                cookie='; '.join(f'{item.name}={item.value}' for item in cookies)
+                with socket.create_connection(('127.0.0.1',api_port),timeout=5) as connection:
+                    connection.sendall((f'POST /api/backup HTTP/1.1\r\nHost: 127.0.0.1:{api_port}\r\n'
+                        f'Cookie: {cookie}\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\n\r\n').encode()+data)
+                    end=time.monotonic()+5
+                    while time.monotonic()<end:
+                        current=ok('GET','backup/restore-status')['restore']
+                        if current and current['operation_id']==operation:
+                            assert current['phase']=='restoring',current
+                            break
+                        time.sleep(.02)
+                    else: raise AssertionError('Restore was not accepted before disconnect')
+                result={'success':True}
+            else:
+                status,result=request('POST','backup',body)
+                assert status==200,result
+            if failed:
+                assert result['success'] is False,result
+                current=ok('GET','backup/restore-status')['restore']
+                assert current['operation_id']==operation and current['phase']=='failed',current
+                return result
+            assert result['success'],result
+            end=time.monotonic()+30
+            while time.monotonic()<end:
+                try:
+                    current=ok('GET','backup/restore-status')['restore']
+                    if current['operation_id']==operation and current['phase']=='done': return current
+                    assert current['phase']!='failed',current
+                except (OSError,urllib.error.URLError): pass
+                time.sleep(.1)
+            raise AssertionError('Restore/restart did not finish')
+
         original = download(backup)
         assert original == Path('/opt/backups',backup).read_bytes()
         before_import = config.read_bytes()
@@ -648,17 +688,36 @@ sys.exit(status)
         assert config.read_text() == changed_config, 'Uploading must not apply/restore files'
         assert download(imported) == original
         assert any(item['name'] == imported for item in ok('GET','backup')['backups'])
-        ok('POST','backup',{'name':imported,'contents':['xray']})
+        restart_count=Path('/opt/native-restarts').read_text().count('restart')
+        restore(imported,['xray'])
+        assert Path('/opt/native-restarts').read_text().count('restart') == restart_count+1
         assert config.read_bytes() == before_import
+        assert traffic_fixture() == fixtures[0].server_port
         ok('PATCH','users/admin',{'password':'transfer-target-password'})
         ok('POST','auth/login',{'username':'admin','password':'transfer-target-password'})
         target_auth=json.loads(Path('/opt/etc/xkeen/xkeen-ui.json').read_text())['auth']
-        ok('POST','backup',{'name':imported})
+        ok('PATCH','settings',{'log':{'timezone':2}})
+        boot=ok('GET','backup/restore-status')['boot_id']
+        restore(imported,disconnect=True)
+        assert ok('GET','backup/restore-status')['boot_id'] != boot, 'Panel did not restart'
+        assert ok('GET','settings')['log']['timezone'] == 4, 'Restored settings were not loaded into memory'
+        assert traffic_fixture() == fixtures[0].server_port
         assert json.loads(Path('/opt/etc/xkeen/xkeen-ui.json').read_text())['auth'] == target_auth
         unicode_name = 'Копия_с_другого_роутера_xkeen-ui.tar'
         ok('PATCH','backup',{'name':imported,'new_name':unicode_name})
         assert download(unicode_name) == original
+        # A failed native restart rolls files back and brings the previous connection back.
+        fallback=json.loads(before_import);fallback['log']={'loglevel':'error'}
+        config.write_text(json.dumps(fallback))
+        rollback_bytes=config.read_bytes()
+        Path('/opt/fail-start-once').touch()
+        restore(unicode_name,['xray'],failed=True)
+        assert config.read_bytes()==rollback_bytes
+        assert traffic_fixture()==fixtures[0].server_port
+        restore(unicode_name,['xray'])
+        assert config.read_bytes()==before_import
         ok('DELETE','backup',{'name':unicode_name})
+        print('PASS: restored Xray restarts natively and carries real traffic; panel re-execs and loads restored settings; failed startup rolls back',flush=True)
 
         # Upload validation must reject dangerous or damaged archives before publishing them.
         def archive(entries):
@@ -705,9 +764,35 @@ sys.exit(status)
         print('PASS: binary backup export, chunked import, explicit restore, Unicode filename, validation and authentication',flush=True)
         renamed = 'smoke_xkeen-ui.tar'
         ok('PATCH', 'backup', {'name': backup, 'new_name': renamed})
-        ok('POST', 'backup', {'name': renamed, 'contents': ['xray']})
+        restore(renamed,['xray'])
         ok('DELETE', 'backup', {'name': renamed})
         print('PASS: backup creation, listing, renaming, selective restore and deletion', flush=True)
+        journal=Path('/opt/var/log/xkeen-ui-journal.log')
+        def journal_contains(text):
+            end=time.monotonic()+5
+            while time.monotonic()<end:
+                if journal.exists() and text in journal.read_text(): return
+                time.sleep(.05)
+            raise AssertionError('Missing persistent journal record: '+text)
+        marker='before-truncation-'+str(uuid.uuid4())
+        raw_log=Path('/opt/var/log/xray/error.log')
+        with raw_log.open('a') as file: file.write(marker+'\n')
+        journal_contains(marker)
+        raw_log.write_text('after-truncation\n')
+        journal_contains('after-truncation')
+        assert marker in journal.read_text(), 'Core truncation erased previous history'
+        ok('POST','control',{'action':'stop'})
+        ok('POST','control',{'action':'start'})
+        journal_contains('XKeen: остановка — завершено')
+        journal_contains('XKeen: запуск — завершено')
+        assert marker in journal.read_text()
+        assert 'Панель: остановка и перезапуск' in journal.read_text()
+        with raw_log.open('a') as file:
+            file.write(''.join(f'journal-cap-{n}\n' for n in range(1200)))
+        journal_contains('journal-cap-1199')
+        assert len(journal.read_text().splitlines())==1000
+        assert 'journal-cap-0\n' not in journal.read_text()
+        print('PASS: persistent journal keeps lifecycle events across panel/core restart and raw-file truncation; last 1000 lines retained',flush=True)
     finally:
         if process is not None and process.poll() is None:
             process.terminate()

@@ -27,7 +27,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { apiCall } from '@/lib/api'
-import { downloadBackupFile, uploadBackupFile } from '@/lib/backupTransfer'
+import { downloadBackupFile, restoreBackupAndWait, uploadBackupFile } from '@/lib/backupTransfer'
 import { useAppContext } from '@/lib/store'
 import {
   IconAlertTriangle,
@@ -274,18 +274,14 @@ export function BackupsPage({ onRefreshConfigs }: Props) {
     async (name: string, contents?: BackupContent[]) => {
       setPendingAction(getRestoreActionKey(name, contents))
       try {
-        const result = await apiCall<BackupActionResponse>('POST', 'backup', contents?.length ? { name, contents } : { name })
-        if (!result.success) {
-          showToast(result.error ?? 'Не удалось восстановить копию', 'error')
+        const result = await restoreBackupAndWait(name, contents)
+        setConfirmAction(null)
+        if (result.panel_restarting) {
+          window.location.reload()
           return
         }
-        setConfirmAction(null)
         await onRefreshConfigs()
-        showToast(
-          contents?.length
-            ? `Файлы ${formatContentList(contents)} восстановлены. Перезапустите соответствующую службу для применения.`
-            : 'Файлы восстановлены. Перезапустите XKeen и панель для применения настроек.'
-        )
+        showToast(contents?.length ? `Восстановлено: ${formatContentList(contents)}` : 'Копия восстановлена и применена')
       } catch (error: any) {
         showToast(error.message ?? 'Не удалось восстановить копию', 'error')
       } finally {
@@ -362,8 +358,8 @@ export function BackupsPage({ onRefreshConfigs }: Props) {
             }}
           />
           <p className="text-muted-foreground text-sm">
-            Архив .tar, до 32 МБ. Загрузка добавляет копию в список и не меняет текущие настройки. После восстановления перезапустите XKeen,
-            а для настроек панели — саму панель.
+            Архив .tar, до 32 МБ. Загрузка добавляет копию в список и не меняет текущие настройки. После восстановления затронутые службы
+            перезапустятся автоматически, а панель переподключится.
           </p>
           <div>
             {isLoading ? (
@@ -589,6 +585,8 @@ export function BackupsPage({ onRefreshConfigs }: Props) {
               {activeDialogAction?.type === 'delete'
                 ? `Копия «${stripBackupSuffix(activeDialogAction.name)}» будет удалена без возможности восстановления.`
                 : 'Текущие конфигурации будут перезаписаны содержимым копии.'}
+              {activeDialogAction?.type === 'restore' &&
+                ' Затронутые службы автоматически перезапустятся. Дождитесь переподключения панели.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

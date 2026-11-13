@@ -1,5 +1,5 @@
 use crate::logger::log;
-use crate::types::{APP_CONFIG, ApiResponse, AppState, MIHOMO_CONF_DIR, XKEEN_CONF_DIR, XRAY_CONF_DIR};
+use crate::types::{APP_CONFIG, ApiResponse, AppSettings, AppState, MIHOMO_CONF_DIR, XKEEN_CONF_DIR, XRAY_CONF_DIR};
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Query, State};
@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::SystemTime;
 use tar::{Archive, Builder};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -34,6 +35,43 @@ const BACKUP_DIR: &str = "/opt/backups";
 const BACKUP_SUFFIX: &str = "xkeen-ui.tar";
 const CONTENT_ORDER: [&str; 4] = ["xkeen", "xkeen-ui", "xray", "mihomo"];
 const MAX_UPLOAD_BYTES: u64 = 32 * 1024 * 1024;
+const RESTORE_STATUS: &str = "/tmp/xkeen-ui-backup-restore.json";
+static BOOT_ID: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
+static RESTORE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RestoreStatus {
+    operation_id: String,
+    phase: String,
+    boot_id: String,
+    panel_restarting: bool,
+    error: Option<String>,
+}
+
+async fn save_restore_status(status: &RestoreStatus) -> Result<(), String> {
+    let data = serde_json::to_vec(status).map_err(|e| e.to_string())?;
+    crate::fsutil::write_atomic(RESTORE_STATUS, data, crate::fsutil::PRIVATE_MODE)
+        .await
+        .map_err(io_error)
+}
+
+pub async fn get_restore_status() -> Json<serde_json::Value> {
+    let status = match tokio::fs::read(RESTORE_STATUS).await {
+        Ok(data) => match serde_json::from_slice::<RestoreStatus>(&data) {
+            Ok(mut status) => {
+                // A new daemon has loaded the restored settings and is serving requests.
+                if status.phase == "restarting" && status.boot_id != *BOOT_ID {
+                    status.phase = "done".into();
+                }
+                Some(status)
+            }
+            Err(error) => return Json(serde_json::json!({"success": false, "error": error.to_string()})),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Json(serde_json::json!({"success": false, "error": error.to_string()})),
+    };
+    Json(serde_json::json!({"success": true, "restore": status, "boot_id": *BOOT_ID}))
+}
 
 #[derive(Deserialize)]
 pub struct BackupFileQuery {
@@ -105,6 +143,7 @@ impl BackupContentFiles {
 pub struct BackupReq {
     name: String,
     contents: Option<Vec<String>>,
+    operation_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -264,7 +303,61 @@ pub async fn upload_backup(State(state): State<AppState>, body: Body) -> axum::r
     .into_response()
 }
 
-pub async fn post_backup(State(state): State<AppState>, Json(req): Json<BackupReq>) -> impl IntoResponse {
+pub async fn post_backup(State(state): State<AppState>, Json(req): Json<BackupReq>) -> axum::response::Response {
+    let id = match req.operation_id.as_deref() {
+        Some(id) => match uuid::Uuid::parse_str(id) {
+            Ok(_) => id.to_string(),
+            Err(_) => return api_error("Некорректный идентификатор восстановления".into()).into_response(),
+        },
+        None => uuid::Uuid::new_v4().to_string(),
+    };
+    let lock = match RESTORE_LOCK.try_lock() {
+        Ok(lock) => lock,
+        Err(_) => return api_error("Дождитесь завершения восстановления".into()).into_response(),
+    };
+    // Firewall restarts may disconnect HTTP. The restore must still finish.
+    match tokio::spawn(async move {
+        let mut status = RestoreStatus { operation_id: id, phase: "restoring".into(), boot_id: BOOT_ID.clone(), panel_restarting: false, error: None };
+        let result = async {
+            save_restore_status(&status).await?;
+            let restored = restore_and_apply(&state, req).await?;
+            status.panel_restarting = restored;
+            status.phase = if restored { "restarting" } else { "done" }.into();
+            save_restore_status(&status).await?;
+            Ok::<_, String>(())
+        }.await;
+        if let Err(error) = result {
+            status.phase = "failed".into();
+            status.error = Some(error.clone());
+            let _ = save_restore_status(&status).await;
+            return api_error(error).into_response();
+        }
+        let response = Json(serde_json::json!({"success": true, "operation_id": status.operation_id, "panel_restarting": status.panel_restarting})).into_response();
+        if status.panel_restarting {
+            tokio::spawn(async move {
+                let _lock = lock;
+                // Let the response leave first. exec preserves the current CLI port/flags
+                // and works even if autostart was explicitly disabled by the user.
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                crate::journal::record("Панель: остановка и перезапуск для применения восстановленных настроек".into()).await;
+                let error = tokio::task::spawn_blocking(|| {
+                    use std::os::unix::process::CommandExt;
+                    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+                    Err::<(), String>(std::process::Command::new(executable).args(std::env::args_os().skip(1)).exec().to_string())
+                }).await;
+                status.phase = "failed".into();
+                status.error = Some(format!("Не удалось перезапустить панель: {}", match error { Ok(Err(e)) => e, Err(e) => e.to_string(), _ => "exec вернулся без перезапуска".into() }));
+                let _ = save_restore_status(&status).await;
+            });
+        }
+        response
+    }).await {
+        Ok(response) => response,
+        Err(error) => api_error(error.to_string()).into_response(),
+    }
+}
+
+async fn restore_and_apply(state: &AppState, req: BackupReq) -> Result<bool, String> {
     let _guard = crate::xray_servers::ACTION_LOCK.lock().await;
     // The panel settings are read and rewritten here: a password change at the same moment
     // must wait, or the restored file would carry the access from before it.
@@ -274,15 +367,63 @@ pub async fn post_backup(State(state): State<AppState>, Json(req): Json<BackupRe
         .as_ref()
         .is_none_or(|contents| contents.iter().any(|content| content == "xray"));
     if touches_xray && crate::xray_servers::is_active().await {
-        return api_error("Сначала отключите управление в окне «Серверы Xray»: бэкап перезапишет его файлы".into())
-            .into_response();
+        return Err("Сначала отключите управление в окне «Серверы Xray»: бэкап перезапишет его файлы".into());
     }
-    run_blocking(
-        tokio::task::spawn_blocking(move || restore_backup_sync(&req.name, req.contents).map(|_| None::<()>)),
-        "Не удалось восстановить бэкап",
-    )
-    .await
-    .into_response()
+    let restored = tokio::task::spawn_blocking(move || restore_backup_sync(&req.name, req.contents))
+        .await
+        .map_err(|e| e.to_string())??;
+    let core = state
+        .core
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .name
+        .clone();
+    let restart_core = restored.contents.contains("xkeen") || restored.contents.contains(core.as_str());
+    if restart_core {
+        let mut restart_attempted = false;
+        let result = async {
+            crate::controller::check_core_config(&core).await?;
+            restart_attempted = true;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                crate::controller::restart_service(state),
+            )
+            .await
+            .map_err(|_| "Время перезапуска XKeen истекло".to_string())??;
+            let stopped = if core == "xray" {
+                crate::xray_servers::main_pids().is_empty()
+            } else {
+                crate::controller::get_pid(&core).is_empty()
+            };
+            if stopped {
+                return Err("XKeen не запустился после восстановления".to_string());
+            }
+            Ok::<_, String>(())
+        }
+        .await;
+        if let Err(error) = result {
+            let rollback = tokio::task::spawn_blocking(move || restored.rollback())
+                .await
+                .map_err(|e| e.to_string())?;
+            let recovery = if restart_attempted {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(120),
+                    crate::controller::restart_service(state),
+                )
+                .await
+                .map_err(|_| "Время восстановления XKeen истекло".to_string())
+                .and_then(|result| result)
+            } else {
+                Ok(())
+            };
+            return Err(format!(
+                "Настройки не применены: {error}. Откат: {}. Восстановление службы: {}",
+                rollback.err().unwrap_or_else(|| "выполнен".into()),
+                recovery.err().unwrap_or_else(|| "выполнено".into())
+            ));
+        }
+    }
+    Ok(restored.contents.contains("xkeen-ui") || restored.contents.contains("xkeen"))
 }
 
 pub async fn delete_backup(Json(req): Json<BackupReq>) -> impl IntoResponse {
@@ -399,7 +540,35 @@ fn create_backup_sync(tz: i32) -> Result<BackupItem, String> {
     })
 }
 
-fn restore_backup_sync(name: &str, requested_contents: Option<Vec<String>>) -> Result<(), String> {
+struct RestoredBackup {
+    contents: HashSet<&'static str>,
+    files: Vec<(PathBuf, Option<Vec<u8>>)>,
+}
+
+impl RestoredBackup {
+    fn rollback(&self) -> Result<(), String> {
+        let mut errors = Vec::new();
+        for (path, before) in self.files.iter().rev() {
+            let result = match before {
+                Some(bytes) => crate::fsutil::write_atomic_sync(path, bytes, crate::fsutil::PRIVATE_MODE),
+                None => match fs::remove_file(path) {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                    result => result,
+                },
+            };
+            if let Err(error) = result {
+                errors.push(format!("{}: {error}", path.display()));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+}
+
+fn restore_backup_sync(name: &str, requested_contents: Option<Vec<String>>) -> Result<RestoredBackup, String> {
     let backup_path = resolve_backup_path(name)?;
     let requested_contents = normalize_requested_contents(requested_contents)?;
     validate_backup_entries(&backup_path)?;
@@ -407,50 +576,70 @@ fn restore_backup_sync(name: &str, requested_contents: Option<Vec<String>>) -> R
     let file = File::open(&backup_path).map_err(io_error)?;
     let mut archive = Archive::new(file);
     let entries = archive.entries().map_err(io_error)?;
-    let mut restored_contents = HashSet::new();
+    let mut restored = RestoredBackup {
+        contents: HashSet::new(),
+        files: Vec::new(),
+    };
 
-    for entry in entries {
-        let mut entry = entry.map_err(io_error)?;
-        if !entry.header().entry_type().is_file() {
-            continue;
+    let result = (|| -> Result<(), String> {
+        for entry in entries {
+            let mut entry = entry.map_err(io_error)?;
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+
+            let entry_path = entry.path().map_err(io_error)?;
+            let relative =
+                normalize_entry_path(entry_path.as_ref()).map_err(|e| format!("невалидный путь в архиве: {e}"))?;
+            let content =
+                detect_content_key(&relative).ok_or_else(|| format!("недопустимый путь в архиве: {relative}"))?;
+
+            if requested_contents
+                .as_ref()
+                .is_some_and(|contents| !contents.contains(content))
+            {
+                continue;
+            }
+            let target = archive_relative_to_target(&relative)
+                .ok_or_else(|| format!("недопустимый путь в архиве: {relative}"))?;
+
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(io_error)?;
+            }
+
+            let mut data = Vec::new();
+            io::Read::read_to_end(&mut entry, &mut data).map_err(io_error)?;
+            if content == "xkeen-ui" {
+                data = keep_current_access(&data, fs::read_to_string(APP_CONFIG).ok().as_deref())?;
+                serde_json::from_slice::<AppSettings>(&data)
+                    .map_err(|e| format!("Некорректные настройки панели: {e}"))?;
+            }
+            let before = match fs::read(&target) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => return Err(io_error(error)),
+            };
+            restored.files.push((target.clone(), before));
+            // An existing file keeps its mode; a new one gets the mode stored in the archive.
+            let default_mode = entry
+                .header()
+                .mode()
+                .map_or(crate::fsutil::DEFAULT_MODE, |mode| mode & 0o777);
+            crate::fsutil::write_atomic_sync(&target, &data, default_mode).map_err(io_error)?;
+
+            restored.contents.insert(content);
         }
 
-        let entry_path = entry.path().map_err(io_error)?;
-        let relative =
-            normalize_entry_path(entry_path.as_ref()).map_err(|e| format!("невалидный путь в архиве: {e}"))?;
-        let content = detect_content_key(&relative).ok_or_else(|| format!("недопустимый путь в архиве: {relative}"))?;
-
-        if requested_contents
-            .as_ref()
-            .is_some_and(|contents| !contents.contains(content))
-        {
-            continue;
-        }
-        let target =
-            archive_relative_to_target(&relative).ok_or_else(|| format!("недопустимый путь в архиве: {relative}"))?;
-
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(io_error)?;
-        }
-
-        let mut data = Vec::new();
-        io::Read::read_to_end(&mut entry, &mut data).map_err(io_error)?;
-        if content == "xkeen-ui" {
-            data = keep_current_access(&data, fs::read_to_string(APP_CONFIG).ok().as_deref())?;
-        }
-        // An existing file keeps its mode; a new one gets the mode stored in the archive.
-        let default_mode = entry
-            .header()
-            .mode()
-            .map_or(crate::fsutil::DEFAULT_MODE, |mode| mode & 0o777);
-        crate::fsutil::write_atomic_sync(&target, &data, default_mode).map_err(io_error)?;
-
-        restored_contents.insert(content);
+        validate_restored_contents(&requested_contents, &restored.contents)
+    })();
+    if let Err(error) = result {
+        return Err(match restored.rollback() {
+            Ok(()) => error,
+            Err(rollback) => format!("{error}. Ошибка отката: {rollback}"),
+        });
     }
-
-    validate_restored_contents(&requested_contents, &restored_contents)?;
     log("INFO", restore_log_message(&backup_path, &requested_contents));
-    Ok(())
+    Ok(restored)
 }
 
 /// Panel settings restored from a backup keep the current accounts, sessions and login

@@ -1,3 +1,5 @@
+import { apiCall } from './api'
+
 type UploadResult = { success: boolean; error?: string }
 
 export const MAX_BACKUP_BYTES = 32 * 1024 * 1024
@@ -35,4 +37,33 @@ export async function uploadBackupFile(file: File): Promise<void> {
     const result = (await response.json()) as UploadResult
     if (!result.success) throw new Error(result.error || 'Не удалось загрузить копию')
   })
+}
+
+export async function restoreBackupAndWait(name: string, contents?: string[]): Promise<{ panel_restarting: boolean }> {
+  // randomUUID is unavailable on HTTP router panels; getRandomValues works there.
+  const operation_id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
+  let response: { success: boolean; error?: string } | undefined
+  try {
+    response = await apiCall('POST', 'backup', { name, ...(contents?.length ? { contents } : {}), operation_id }, { timeoutMs: 15000 })
+  } catch {
+    // A network interruption during XKeen restart does not cancel the server task.
+  }
+  if (response && !response.success) throw new Error(response.error || 'Не удалось восстановить копию')
+  const deadline = Date.now() + 180000
+  while (Date.now() < deadline) {
+    let result:
+      { success: boolean; restore?: { operation_id: string; phase: string; error?: string; panel_restarting: boolean } } | undefined
+    try {
+      result = await apiCall('GET', 'backup/restore-status', undefined, { timeoutMs: 5000 })
+    } catch {
+      // The daemon is replacing itself; wait for the new one to load its settings.
+    }
+    const status = result?.success ? result.restore : undefined
+    if (status?.operation_id === operation_id) {
+      if (status.phase === 'failed') throw new Error(status.error || 'Не удалось применить копию')
+      if (status.phase === 'done') return { panel_restarting: status.panel_restarting }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+  throw new Error('Не удалось дождаться применения копии. Проверьте журнал панели и доступность роутера.')
 }

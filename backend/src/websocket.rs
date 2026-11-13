@@ -7,6 +7,7 @@ use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use notify::{RecursiveMode, Watcher};
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
@@ -21,9 +22,9 @@ pub struct LogParams {
 
 fn log_path(file: Option<&str>) -> String {
     if file == Some("access.log") {
-        access_log_path()
+        crate::journal::ACCESS.into()
     } else {
-        error_log_path()
+        crate::journal::ERROR.into()
     }
 }
 
@@ -45,22 +46,14 @@ fn read_log_file(p: String, offset: u64, query: String, full: bool, tz: i32) -> 
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     let mut current_pos = offset;
 
-    if full && query.is_empty() && len > 128000 {
-        let seek_pos = len - 128000;
-        _ = f.seek(SeekFrom::Start(seek_pos));
-        let mut reader = BufReader::new(&mut f);
-        let mut discard = String::new();
-        let skipped = reader.read_line(&mut discard).unwrap_or(0);
-        current_pos = seek_pos + skipped as u64;
-    } else if !full && len < offset {
+    if !full && len < offset {
         return ("clear".into(), vec![], 0);
     } else if full {
         current_pos = 0;
     }
 
     _ = f.seek(SeekFrom::Start(current_pos));
-    let mut lines = Vec::new();
-    let mut total_bytes = 0usize;
+    let mut lines = VecDeque::new();
     let mut bytes_read = current_pos;
     let keywords: Vec<String> = query
         .split('|')
@@ -93,17 +86,18 @@ fn read_log_file(p: String, offset: u64, query: String, full: bool, tz: i32) -> 
         if matched {
             let proc = process_log_line(line, tz);
             if !proc.is_empty() {
-                if full && !query.is_empty() {
-                    total_bytes += line_len;
-                    if total_bytes >= 128000 {
-                        break;
-                    }
+                lines.push_back(proc);
+                while lines.len() > crate::journal::MAX_LINES {
+                    lines.pop_front();
                 }
-                lines.push(proc);
             }
         }
     }
-    (if full { "initial".into() } else { "append".into() }, lines, bytes_read)
+    (
+        if full { "initial".into() } else { "append".into() },
+        lines.into_iter().collect(),
+        bytes_read,
+    )
 }
 
 /// Sent on the log channel when the Xray log paths changed: open journals reopen their file.
@@ -130,7 +124,7 @@ fn spawn_log_watcher(tx: std::sync::Arc<tokio::sync::broadcast::Sender<String>>)
 
         // Watch the directories, not the files: a log that does not exist yet (or is recreated
         // by rotation) is still picked up. Events carry the full file path.
-        let mut dirs: Vec<std::path::PathBuf> = [error_log_path(), access_log_path()]
+        let mut dirs: Vec<std::path::PathBuf> = [crate::journal::ERROR, crate::journal::ACCESS]
             .iter()
             .filter_map(|file| Path::new(file).parent().map(Path::to_path_buf))
             .collect();
@@ -220,8 +214,7 @@ async fn run_log_socket(socket: WebSocket, state: AppState, file: Option<String>
 
     let p_clone = path.clone();
     let q_clone = query.clone();
-    let Ok((t, l, mut offset)) =
-        tokio::task::spawn_blocking(move || read_log_file(p_clone, 0, q_clone, true, tz)).await
+    let Ok((t, l, _offset)) = tokio::task::spawn_blocking(move || read_log_file(p_clone, 0, q_clone, true, tz)).await
     else {
         return;
     };
@@ -249,8 +242,7 @@ async fn run_log_socket(socket: WebSocket, state: AppState, file: Option<String>
 
                                 let p = path.clone();
                                 let q = query.clone();
-                                let Ok((t, l, off)) = tokio::task::spawn_blocking(move || read_log_file(p, 0, q, true, tz)).await else { break; };
-                                offset = off;
+                                let Ok((t, l, _off)) = tokio::task::spawn_blocking(move || read_log_file(p, 0, q, true, tz)).await else { break; };
 
                                 let msg = if l.is_empty() { serde_json::json!({"type": "clear"}) } else { serde_json::json!({"type": t, "lines": l}) };
                                 if tx.send(Message::Text(msg.to_string().into())).await.is_err() { break; }
@@ -259,16 +251,17 @@ async fn run_log_socket(socket: WebSocket, state: AppState, file: Option<String>
                                 query = v["query"].as_str().unwrap_or("").to_string();
                                 let q = query.clone();
                                 let p = path.clone();
-                                let Ok((t, l, off)) = tokio::task::spawn_blocking(move || read_log_file(p, 0, q, true, tz)).await else { break; };
-                                offset = off;
+                                let Ok((t, l, _off)) = tokio::task::spawn_blocking(move || read_log_file(p, 0, q, true, tz)).await else { break; };
 
                                 let msg = if l.is_empty() { serde_json::json!({"type": "clear"}) } else { serde_json::json!({"type": if v["type"] == "filter" { "filtered" } else { t.as_str() }, "lines": l}) };
                                 if tx.send(Message::Text(msg.to_string().into())).await.is_err() { break; }
                             },
                             Some("clear") => {
-                                let p = path.clone();
-                                offset = 0;
-                                tokio::task::spawn_blocking(move || { File::create(p).ok(); });
+                                let access = kind.as_deref() == Some("access.log");
+                                if !matches!(tokio::task::spawn_blocking(move || crate::journal::clear(access)).await, Ok(Ok(()))) {
+                                    let _ = tx.send(Message::Text(serde_json::json!({"error": "Не удалось очистить журнал"}).to_string().into())).await;
+                                    continue;
+                                }
                                 if tx.send(Message::Text(serde_json::json!({"type": "clear"}).to_string().into())).await.is_err() { break; }
                             },
                             _ => {}
@@ -294,21 +287,19 @@ async fn run_log_socket(socket: WebSocket, state: AppState, file: Option<String>
                     let tz = state.settings.read().unwrap_or_else(std::sync::PoisonError::into_inner).log.timezone;
                     let p = path.clone();
                     let q = query.clone();
-                    let Ok((t, l, off)) = tokio::task::spawn_blocking(move || read_log_file(p, 0, q, true, tz)).await else { break; };
-                    offset = off;
+                    let Ok((t, l, _off)) = tokio::task::spawn_blocking(move || read_log_file(p, 0, q, true, tz)).await else { break; };
                     let msg = if l.is_empty() { serde_json::json!({"type": "clear"}) } else { serde_json::json!({"type": t, "lines": l}) };
                     if tx.send(Message::Text(msg.to_string().into())).await.is_err() { break; }
                 } else if changed_path == path {
                     let tz = state.settings.read().unwrap_or_else(std::sync::PoisonError::into_inner).log.timezone;
                     let p = path.clone();
                     let q = query.clone();
-                    let off_curr = offset;
-                    let Ok((t, l, new_off)) = tokio::task::spawn_blocking(move || read_log_file(p, off_curr, q, false, tz)).await else { break; };
-                    offset = new_off;
+                    // The bounded journal rotates atomically; an initial snapshot keeps
+                    // all 1000 rows visible even when the byte length shrinks or stays equal.
+                    let Ok((t, l, _off)) = tokio::task::spawn_blocking(move || read_log_file(p, 0, q, true, tz)).await else { break; };
 
                     if !l.is_empty() {
-                        let content = l.join("\n");
-                        if tx.send(Message::Text(serde_json::json!({"type": t, "content": content}).to_string().into())).await.is_err() { break; }
+                        if tx.send(Message::Text(serde_json::json!({"type": t, "lines": l}).to_string().into())).await.is_err() { break; }
                     } else if t == "clear"
                          && tx.send(Message::Text(serde_json::json!({"type": "clear"}).to_string().into())).await.is_err() { break; }
                 }
@@ -358,5 +349,27 @@ async fn handle_update_socket(socket: WebSocket, state: AppState) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+
+    #[test]
+    fn full_and_filtered_snapshots_keep_the_latest_thousand_without_a_byte_cutoff() {
+        let path = std::env::temp_dir().join(format!("ws-journal-{}", uuid::Uuid::new_v4()));
+        let data = (0..1005)
+            .map(|n| format!("[WARN] item-{n:04} {}\n", "x".repeat(180)))
+            .collect::<String>();
+        std::fs::write(&path, data).unwrap();
+        for query in ["", "WARN"] {
+            let (kind, lines, _) = read_log_file(path.to_string_lossy().into_owned(), 0, query.into(), true, 0);
+            assert_eq!(kind, "initial");
+            assert_eq!(lines.len(), 1000);
+            assert!(lines.first().unwrap().contains("item-0005"));
+            assert!(lines.last().unwrap().contains("item-1004"));
+        }
+        std::fs::remove_file(path).unwrap();
     }
 }

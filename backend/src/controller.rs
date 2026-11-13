@@ -93,6 +93,19 @@ pub async fn run_init_command(state: &AppState, args: &[&str]) -> Result<(), Str
 }
 
 async fn run_service_command(command: &mut Command) -> std::io::Result<std::process::ExitStatus> {
+    let action = command
+        .as_std()
+        .get_args()
+        .next()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let label = match action.as_str() {
+        "start" => "запуск",
+        "stop" => "остановка",
+        "restart" | "-restart" => "перезапуск",
+        _ => "команда службы",
+    };
+    crate::journal::record(format!("XKeen: {label}")).await;
     command.stdin(std::process::Stdio::null()).kill_on_drop(true);
     if let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
@@ -104,7 +117,17 @@ async fn run_service_command(command: &mut Command) -> std::io::Result<std::proc
         }
         command.stderr(file);
     }
-    command.status().await
+    let result = command.status().await;
+    crate::journal::record(format!(
+        "XKeen: {label} — {}",
+        match &result {
+            Ok(status) if status.success() => "завершено".into(),
+            Ok(status) => status.to_string(),
+            Err(error) => error.to_string(),
+        }
+    ))
+    .await;
+    result
 }
 
 fn restart_command() -> Command {
@@ -269,7 +292,7 @@ pub async fn get_control(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
-async fn check_core_config(core: &str) -> Result<(), String> {
+pub(crate) async fn check_core_config(core: &str) -> Result<(), String> {
     if core == "xray" {
         fs::create_dir_all(XRAY_CONF_DIR).await.ok();
         let has_json = std::fs::read_dir(XRAY_CONF_DIR)
@@ -475,10 +498,6 @@ async fn control(state: AppState, req: ControlReq) -> Json<ApiResponse<()>> {
                     data: None,
                 });
             }
-            if cur_name == "mihomo" && (a == "start" || a == "hardRestart") {
-                _ = fs::write(error_log_path(), b"").await;
-            }
-
             let args: &[&str] = match a {
                 "start" => &["start", "on"],
                 "hardRestart" => &["restart", "on"],

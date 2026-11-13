@@ -9,6 +9,7 @@ mod frontend_embedder;
 mod fsutil;
 mod geo;
 mod healthchecker;
+mod journal;
 mod jsonc;
 mod logger;
 mod overview;
@@ -580,6 +581,7 @@ async fn main() {
         }
     }
 
+    journal::start();
     xray_servers::start(state.clone()).await;
     traffic_guard::refresh_installed().await;
     traffic_guard::start(state.clone());
@@ -631,6 +633,7 @@ async fn main() {
         )
         .route("/api/backup/download", get(backuper::download_backup))
         .route("/api/backup/upload", post(backuper::upload_backup))
+        .route("/api/backup/restore-status", get(backuper::get_restore_status))
         .route(
             "/api/settings",
             get(settings::get_settings).patch(settings::patch_settings),

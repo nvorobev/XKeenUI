@@ -58,3 +58,14 @@ jobs:
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 ca-certificates >/dev/null
               python3 tests/panel-api-smoke.py /src/backend/target/debug/xkeen-ui /cores/xray /cores/mihomo
             '
+
+      - name: Check strict traffic protection with real packets
+        run: |
+          docker run --rm --cap-add NET_ADMIN --cap-add SYS_ADMIN \
+            --sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+            --sysctl net.ipv6.conf.all.forwarding=1 -e XKEEN_UI_GUARD_TEST=1 \
+            -v "$PWD:/src:ro" -v /tmp/xkeen-test-core:/cores:ro -w /src ubuntu:26.04 sh -ec '
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 iproute2 iptables curl util-linux >/dev/null
+              python3 tests/traffic-guard-smoke.py
+              python3 tests/traffic-guard-api-smoke.py /src/backend/target/debug/xkeen-ui /cores/xray /cores/mihomo
+            '

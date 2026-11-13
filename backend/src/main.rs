@@ -582,6 +582,7 @@ async fn main() {
 
     xray_servers::start(state.clone()).await;
     traffic_guard::refresh_installed().await;
+    traffic_guard::start(state.clone());
 
     let secure_api = Router::new()
         .route(

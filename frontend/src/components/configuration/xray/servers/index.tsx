@@ -254,7 +254,7 @@ export function XrayServers({ onChanged, hasUnsavedConfigs }: { onChanged: () =>
     const list = rows.filter((r) =>
       filter === 'pool' ? r.inPool && !r.pendingRemoval : filter === 'alive' ? r.sample?.latency_ms != null : true
     )
-    const latency = (r: Row) => r.sample?.latency_ms ?? Number.MAX_SAFE_INTEGER
+    const latency = (r: Row) => (r.sample?.latency_ms != null ? (r.sample.average_ms ?? r.sample.latency_ms) : Number.MAX_SAFE_INTEGER)
     list.sort((a, b) => {
       const pin = Number(b.server.id === liveActiveId) - Number(a.server.id === liveActiveId)
       if (pin) return pin
@@ -747,8 +747,8 @@ export function XrayServers({ onChanged, hasUnsavedConfigs }: { onChanged: () =>
           <AlertDialogHeader>
             <AlertDialogTitle>Отключить управление серверами?</AlertDialogTitle>
             <AlertDialogDescription>
-              Пул будет удалён, исходные routing и api вернутся в ваши конфиги, Xray перезапустится, если был запущен. Правки конфигов,
-              сделанные после включения, сохранятся.
+              Мониторинг и автоматическое переключение этой группы будут отключены. Текущее подключение и библиотека серверов сохранятся.
+              Для старого формата пула будут восстановлены исходные routing и api.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

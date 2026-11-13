@@ -139,6 +139,11 @@ export function ServerRow({
 
       <span className="flex flex-col items-end text-sm lg:items-end">
         {latency}
+        {sample?.average_ms != null && (
+          <span className="text-muted-foreground text-[11px]">
+            средний {sample.average_ms} мс · {sample.checks} пров.
+          </span>
+        )}
         {sample?.time && !checking && <span className="text-muted-foreground text-[11px]">{relativeTime(sample.time)}</span>}
       </span>
 

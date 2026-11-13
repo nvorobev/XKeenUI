@@ -12,7 +12,7 @@ pub mod xray;
 use crate::api_relay;
 use crate::types::{ApiResponse, AppState};
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use dns::Resolver;
 use futures_util::stream::{self, StreamExt};
@@ -403,9 +403,7 @@ where
 }
 
 /// `POST /api/route-test` — проверка списка целей активным ядром.
-pub async fn post_route_test(
-    State(state): State<AppState>, headers: HeaderMap, Json(req): Json<RouteTestRequest>,
-) -> Response {
+pub async fn post_route_test(State(state): State<AppState>, Json(req): Json<RouteTestRequest>) -> Response {
     if req.targets.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "нет целей для проверки".into());
     }
@@ -415,12 +413,7 @@ pub async fn post_route_test(
         return error_response(StatusCode::BAD_REQUEST, "не более 500 целей".into());
     }
 
-    let port_override = api_relay::header_value(&headers, "x-clash-port");
-    let secret_override = api_relay::header_value(&headers, "x-clash-secret");
-    let unix_override = api_relay::header_value(&headers, "x-clash-unix");
-    let clash_target = api_relay::resolve_clash_target(port_override, secret_override, unix_override)
-        .await
-        .ok();
+    let clash_target = api_relay::resolve_clash_target().await.ok();
     let resolver = dns::LiveResolver::new(clash_target, state.http_client.clone());
     // Один резолвер на весь запрос: одинаковый домен из разных целей резолвится один раз
     // (см. `dns::CachingResolver`), а не заново на каждую цель.

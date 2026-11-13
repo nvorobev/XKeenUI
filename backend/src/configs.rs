@@ -590,10 +590,10 @@ fn api_error(error: impl Into<String>) -> Json<ApiResponse<()>> {
     })
 }
 
-struct MihomoApiCreds {
-    port: Option<u16>,
-    secret: Option<String>,
-    unix_path: Option<String>,
+pub(crate) struct MihomoApiCreds {
+    pub(crate) port: Option<u16>,
+    pub(crate) secret: Option<String>,
+    pub(crate) unix_path: Option<String>,
 }
 
 fn yaml_value_to_string(value: &yaml_rust2::Yaml) -> Option<String> {
@@ -606,7 +606,7 @@ fn yaml_value_to_string(value: &yaml_rust2::Yaml) -> Option<String> {
     }
 }
 
-fn parse_mihomo_api_creds(yaml_content: &str) -> MihomoApiCreds {
+pub(crate) fn parse_mihomo_api_creds(yaml_content: &str) -> MihomoApiCreds {
     let mut creds = MihomoApiCreds {
         port: None,
         secret: None,
@@ -618,20 +618,26 @@ fn parse_mihomo_api_creds(yaml_content: &str) -> MihomoApiCreds {
     let Some(doc) = docs.first() else { return creds };
     if let Some(unix_val) = yaml_value_to_string(&doc["external-controller-unix"]) {
         let trimmed = unix_val.trim();
+        // Mihomo resolves a relative socket path against its home directory.
         if !trimmed.is_empty()
-            && let Some(name) = Path::new(trimmed)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .filter(|n| !n.is_empty())
+            && !Path::new(trimmed)
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
         {
-            creds.unix_path = Some(format!("{}/{}", MIHOMO_CONF_DIR, name));
+            creds.unix_path = Some(if trimmed.starts_with('/') {
+                trimmed.to_string()
+            } else {
+                format!("{}/{}", MIHOMO_CONF_DIR, trimmed.trim_start_matches("./"))
+            });
         }
     }
     if let Some(controller) = yaml_value_to_string(&doc["external-controller"])
         && let Some(port_str) = controller.trim().rsplit(':').next()
     {
         let port_str = port_str.trim().trim_matches(|c| c == '"' || c == '\'');
-        if let Ok(port) = port_str.parse::<u16>() {
+        if let Ok(port) = port_str.parse::<u16>()
+            && port != 0
+        {
             creds.port = Some(port);
         }
     }

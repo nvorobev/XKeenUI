@@ -218,7 +218,7 @@ function Tiles({
   isXray: boolean
   snapshot: Snapshot | null
   overview: RouterOverview | null
-  guard: boolean | null
+  guard: 'on' | 'off' | 'inactive' | 'blocked' | null
 }) {
   const settings = snapshot?.settings
   const activeId = settings?.selected_id ?? snapshot?.active_id
@@ -255,9 +255,9 @@ function Tiles({
       />
       <Tile
         label="Защита трафика"
-        value={guard == null ? '—' : guard ? 'Вкл' : 'Выкл'}
-        detail="мимо прокси"
-        tone={guard ? 'ok' : undefined}
+        value={guard == null ? '—' : { on: 'Вкл', off: 'Выкл', inactive: 'Не действует', blocked: 'Блокировка' }[guard]}
+        detail={guard === 'blocked' ? 'VPN не подтверждён · интернет закрыт' : 'защита устройств политики XKeen'}
+        tone={guard === 'on' ? 'ok' : guard === 'inactive' ? 'bad' : undefined}
         onClick={() => navigate('settings')}
       />
     </div>
@@ -855,7 +855,7 @@ export function Overview({ isXray, onOpenModal }: { isXray: boolean; onOpenModal
   const [candidates, setCandidates] = useState<Candidates | null>(null)
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [overview, setOverview] = useState<RouterOverview | null>(null)
-  const [guard, setGuard] = useState<boolean | null>(null)
+  const [guard, setGuard] = useState<'on' | 'off' | 'inactive' | 'blocked' | null>(null)
   const [layout, setLayout] = useState<CardLayout>(readLayout)
   const columns = useRef<Record<'left' | 'right', HTMLDivElement | null>>({ left: null, right: null })
   const history = usePingHistoryStore((s) => s.history)
@@ -896,15 +896,31 @@ export function Overview({ isXray, onOpenModal }: { isXray: boolean; onOpenModal
       .then(setCandidates)
       .catch(() => {})
   }, [isXray])
-  useEffect(() => {
-    let cancelled = false
-    void apiCall<{ success: boolean; enabled?: boolean }>('GET', 'traffic-guard')
-      .then((result) => !cancelled && setGuard(result.success ? !!result.enabled : null))
-      .catch(() => {})
-    return () => {
-      cancelled = true
+  const guardRequest = useRef(0)
+  const loadGuard = useCallback(async () => {
+    const request = ++guardRequest.current
+    try {
+      const result = await apiCall<{ success: boolean; enabled: boolean; active: boolean; mode: string; health?: { blocked: boolean } }>(
+        'GET',
+        'traffic-guard'
+      )
+      if (request !== guardRequest.current) return
+      setGuard(
+        !result.success
+          ? null
+          : !result.enabled
+            ? 'off'
+            : !result.active
+              ? 'inactive'
+              : result.mode === 'strict' && result.health?.blocked !== false
+                ? 'blocked'
+                : 'on'
+      )
+    } catch {
+      if (request === guardRequest.current) setGuard(null)
     }
   }, [])
+  usePolling(loadGuard, 5000)
 
   const update = useCallback((next: CardLayout) => {
     setLayout(next)

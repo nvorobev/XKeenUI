@@ -1,11 +1,9 @@
 use axum::body::{Body, to_bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{MatchedPath, Query, State};
-use axum::http::{HeaderMap, HeaderName, Request, StatusCode};
+use axum::extract::{MatchedPath, State};
+use axum::http::{HeaderName, Request, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use serde::Deserialize;
-use std::path::Path as FsPath;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -26,13 +24,6 @@ pub(crate) enum ClashTarget {
     Unix {
         path: String,
     },
-}
-
-#[derive(Deserialize)]
-pub struct ClashWsQuery {
-    pub port: Option<String>,
-    pub secret: Option<String>,
-    pub unix: Option<String>,
 }
 
 pub async fn get_device_list(State(state): State<AppState>) -> impl IntoResponse {
@@ -71,14 +62,56 @@ fn raw_relay_path(matched_path: &str, request_path: &str) -> String {
         .to_string()
 }
 
+/// The config is editable by regular users. Even a controller accidentally pointed at
+/// another local service must never turn this relay into access to RCI or panel APIs.
+fn allowed_relay_path(path: &str) -> bool {
+    let mut decoded = path.to_string();
+    for _ in 0..4 {
+        if decoded.split('/').any(|s| matches!(s, "." | ".."))
+            || decoded.chars().any(char::is_control)
+            || decoded.contains('\\')
+        {
+            return false;
+        }
+        let Ok(next) = urlencoding::decode(&decoded) else {
+            return false;
+        };
+        if next == decoded {
+            break;
+        }
+        decoded = next.into_owned();
+    }
+    if decoded.split('/').any(|s| matches!(s, "." | ".."))
+        || decoded.chars().any(char::is_control)
+        || decoded.contains('\\')
+    {
+        return false;
+    }
+    matches!(
+        decoded.trim_start_matches('/').split('/').next().unwrap_or_default(),
+        "configs"
+            | "proxies"
+            | "group"
+            | "rules"
+            | "connections"
+            | "providers"
+            | "cache"
+            | "dns"
+            | "logs"
+            | "traffic"
+            | "memory"
+            | "version"
+    )
+}
+
 pub async fn proxy_http(State(state): State<AppState>, matched_path: MatchedPath, req: Request<Body>) -> Response {
     let path = raw_relay_path(matched_path.as_str(), req.uri().path());
+    if !allowed_relay_path(&path) {
+        return make_error(StatusCode::FORBIDDEN, "Разрешены только пути API Mihomo".into());
+    }
     let (parts, body) = req.into_parts();
-    let port_override = header_value(&parts.headers, "x-clash-port");
-    let secret_override = header_value(&parts.headers, "x-clash-secret");
-    let unix_override = header_value(&parts.headers, "x-clash-unix");
 
-    let target = match resolve_clash_target(port_override, secret_override, unix_override).await {
+    let target = match resolve_clash_target().await {
         Ok(t) => t,
         Err(e) => return make_error(StatusCode::BAD_GATEWAY, e),
     };
@@ -110,11 +143,12 @@ pub async fn proxy_http(State(state): State<AppState>, matched_path: MatchedPath
     }
 }
 
-pub async fn proxy_ws(
-    matched_path: MatchedPath, Query(q): Query<ClashWsQuery>, ws: WebSocketUpgrade, req: Request<Body>,
-) -> impl IntoResponse {
+pub async fn proxy_ws(matched_path: MatchedPath, ws: WebSocketUpgrade, req: Request<Body>) -> impl IntoResponse {
     let path = raw_relay_path(matched_path.as_str(), req.uri().path());
-    let target = match resolve_clash_target(q.port, q.secret, q.unix).await {
+    if !allowed_relay_path(&path) {
+        return make_error(StatusCode::FORBIDDEN, "Разрешены только пути API Mihomo".into());
+    }
+    let target = match resolve_clash_target().await {
         Ok(t) => t,
         Err(e) => return make_error(StatusCode::BAD_REQUEST, e),
     };
@@ -221,6 +255,9 @@ fn should_forward_header(name: &HeaderName) -> bool {
             | "x-clash-secret"
             | "x-clash-unix"
             | "authorization"
+            // The panel session must not reach Mihomo (or whatever listens on its port).
+            | "cookie"
+            | "x-ndma-tkn"
     )
 }
 
@@ -235,14 +272,6 @@ fn should_forward_response_header(name: &HeaderName) -> bool {
             | "transfer-encoding"
             | "content-length"
     )
-}
-
-pub(crate) fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
 }
 
 fn make_error(status: StatusCode, err: String) -> Response {
@@ -306,42 +335,35 @@ async fn build_http_response(upstream: reqwest::Response) -> Response {
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-pub(crate) async fn resolve_clash_target(
-    port_override: Option<String>, secret_override: Option<String>, unix_override: Option<String>,
-) -> Result<ClashTarget, String> {
-    if let Some(u) = unix_override
-        && let Some(path) = sanitize_unix_name(&u)
-    {
-        if tokio::fs::metadata(&path).await.is_ok() {
-            return Ok(ClashTarget::Unix { path });
-        }
-        return Err("Unix сокет не найден на диске".into());
-    }
-
-    if let Some(port) = port_override {
-        // Only a number: anything else (`80@host`, `80/x`) would leave 127.0.0.1 in the URL.
-        let port = port
-            .trim()
-            .parse::<u16>()
-            .ok()
-            .filter(|port| *port != 0)
-            .ok_or("Некорректный порт Clash API")?;
-        return Ok(ClashTarget::Tcp {
-            host: "127.0.0.1".to_string(),
-            port: port.to_string(),
-            secret: secret_override,
-        });
-    }
-
-    Err("Фронт не передал данные для подключения".into())
+/// Where the Clash API of the running Mihomo listens, taken from its own config on disk. The
+/// browser never chooses the address: a client-supplied port could point the relay (and the
+/// session it carries) at any local service, such as the router's RCI on :79.
+pub(crate) async fn resolve_clash_target() -> Result<ClashTarget, String> {
+    let main_config = format!("{MIHOMO_CONF_DIR}/config.yaml");
+    let yaml = tokio::fs::read_to_string(&main_config)
+        .await
+        .map_err(|e| format!("Не удалось прочитать {main_config}: {e}"))?;
+    clash_target_from_config(&yaml).await
 }
 
-fn sanitize_unix_name(raw: &str) -> Option<String> {
-    let name = FsPath::new(raw.trim()).file_name()?.to_string_lossy();
-    if name.is_empty() {
-        return None;
+async fn clash_target_from_config(yaml: &str) -> Result<ClashTarget, String> {
+    let creds = crate::configs::parse_mihomo_api_creds(yaml);
+    if let Some(path) = creds.unix_path {
+        use std::os::unix::fs::FileTypeExt;
+        return match tokio::fs::metadata(&path).await {
+            Ok(meta) if meta.file_type().is_socket() => Ok(ClashTarget::Unix { path }),
+            Ok(_) => Err(format!("{path} не является сокетом")),
+            Err(_) => Err("Unix сокет не найден на диске".into()),
+        };
     }
-    Some(format!("{}/{}", MIHOMO_CONF_DIR, name))
+    match creds.port {
+        Some(port) => Ok(ClashTarget::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: port.to_string(),
+            secret: creds.secret,
+        }),
+        None => Err("В конфиге Mihomo не задан external-controller".into()),
+    }
 }
 
 pub(crate) fn build_url(scheme: &str, host: &str, port: &str, path: &str, query: Option<&str>) -> String {
@@ -358,17 +380,57 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn clash_port_must_be_a_number() {
-        for bad in ["80@evil.example", "80/x", "", "0", "70000"] {
-            assert!(
-                resolve_clash_target(Some(bad.into()), None, None).await.is_err(),
-                "{bad}"
-            );
-        }
-        let Ok(ClashTarget::Tcp { host, port, .. }) = resolve_clash_target(Some(" 9090 ".into()), None, None).await
+    async fn clash_target_comes_from_config() {
+        let Ok(ClashTarget::Tcp { host, port, secret }) =
+            clash_target_from_config("external-controller: 0.0.0.0:9090\nsecret: s3\n").await
         else {
             panic!("tcp target");
         };
-        assert_eq!((host.as_str(), port.as_str()), ("127.0.0.1", "9090"));
+        assert_eq!(
+            (host.as_str(), port.as_str(), secret.as_deref()),
+            ("127.0.0.1", "9090", Some("s3"))
+        );
+        for bad in ["", "external-controller: 0.0.0.0:0\n", "external-controller: nope\n"] {
+            assert!(clash_target_from_config(bad).await.is_err(), "{bad}");
+        }
+        // A socket path that is not a socket is refused.
+        assert!(
+            clash_target_from_config("external-controller-unix: /etc/hosts\n")
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn relay_rejects_rci_and_path_traversal_even_with_an_editable_controller_config() {
+        for path in [
+            "rci/",
+            "api/settings",
+            "proxies/../rci/",
+            "proxies/%2e%2e/rci/",
+            "proxies/%252e%252e/rci/",
+            "proxies/x%2f..%2f..%2frci/",
+            "proxies/x\\..\\..\\rci/",
+            "proxies/%5c..%5c..%5crci/",
+        ] {
+            assert!(!allowed_relay_path(path), "{path}");
+        }
+        for path in [
+            "configs",
+            "proxies/France%20%E2%9C%85/delay",
+            "providers/proxies/test",
+            "connections/id",
+            "cache/dns/flush",
+        ] {
+            assert!(allowed_relay_path(path), "{path}");
+        }
+        assert!(!should_forward_header(&HeaderName::from_static("x-ndma-tkn")));
+    }
+
+    #[test]
+    fn session_cookie_is_not_forwarded() {
+        assert!(!should_forward_header(&HeaderName::from_static("cookie")));
+        assert!(!should_forward_header(&HeaderName::from_static("authorization")));
+        assert!(should_forward_header(&HeaderName::from_static("content-type")));
     }
 }

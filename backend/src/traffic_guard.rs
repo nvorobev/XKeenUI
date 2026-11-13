@@ -6,20 +6,56 @@ use crate::types::AppState;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
+use std::sync::LazyLock;
+use std::time::Duration;
 use tokio::process::Command;
+use tokio::sync::{Mutex, Notify};
 
 const SCRIPT: &str = include_str!("traffic_guard.sh");
 const GUARD_HOOK: &str = "/opt/etc/ndm/netfilter.d/90-xkeen-ui-guard.sh";
 const XKEEN_HOOK: &str = "/opt/etc/ndm/netfilter.d/proxy.sh";
 const CHAIN: &str = "xkeen_ui_guard";
 const SCRIPT_MODE: u32 = 0o755;
+const CONFIG: &str = "/opt/etc/xkeen/traffic-guard.json";
+const HEALTH: &str = "/tmp/xkeen-ui-guard-health";
+static LOCK: Mutex<()> = Mutex::const_new(());
+static CHANGED: Notify = Notify::const_new();
+static HEALTH_STATUS: LazyLock<Mutex<Value>> =
+    LazyLock::new(|| Mutex::new(json!({"blocked": true, "vpn": null, "error": "VPN ещё не проверен"})));
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardMode {
+    #[default]
+    Proxy,
+    Strict,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+struct GuardConfig {
+    mode: GuardMode,
+    /// Mihomo proxy/group name; Xray always follows the current selected server.
+    target: String,
+    policy_mark: Option<String>,
+}
+
+async fn config() -> Result<GuardConfig, String> {
+    match tokio::fs::read(CONFIG).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("Настройки защиты повреждены: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(GuardConfig::default()),
+        Err(e) => Err(e.to_string()),
+    }
+}
 
 #[derive(Deserialize)]
 pub struct GuardReq {
     enabled: bool,
+    mode: Option<GuardMode>,
+    target: Option<String>,
 }
 
 /// Значение переменной из хука XKeen: `name="..."` или `name=...` без кавычек.
@@ -44,15 +80,19 @@ fn describe_ports(hook: &str) -> String {
 }
 
 async fn run_script(args: &[&str]) -> Result<(), String> {
-    let output = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg("-c")
         .arg(SCRIPT)
         .arg("sh")
         .args(args)
         .env_remove("type")
         .env_remove("table")
-        .output()
+        .kill_on_drop(true);
+    let output = command.output();
+    let output = tokio::time::timeout(Duration::from_secs(20), output)
         .await
+        .map_err(|_| "Применение защиты не завершилось за 20 секунд".to_string())?
         .map_err(|e| format!("Не удалось запустить sh: {e}"))?;
     if output.status.success() {
         Ok(())
@@ -67,12 +107,15 @@ async fn run_script(args: &[&str]) -> Result<(), String> {
 }
 
 async fn is_active() -> bool {
-    let Ok(output) = Command::new("iptables").args(["-w", "-S", "FORWARD"]).output().await else {
+    let mut command = Command::new("iptables");
+    command.args(["-w", "-S", "FORWARD"]).kill_on_drop(true);
+    let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(3), command.output()).await else {
         return false;
     };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .any(|line| line.ends_with(&format!("-j {CHAIN}")))
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.ends_with(&format!("-j {CHAIN}")))
 }
 
 async fn status() -> Value {
@@ -98,8 +141,60 @@ async fn status() -> Value {
     })
 }
 
-pub async fn get_traffic_guard() -> Json<Value> {
-    Json(status().await)
+pub async fn get_traffic_guard(State(state): State<AppState>) -> Json<Value> {
+    Json(full_status(&state).await)
+}
+
+async fn full_status(state: &AppState) -> Value {
+    let mut result = status().await;
+    match config().await {
+        Ok(cfg) => {
+            result["mode"] = json!(cfg.mode);
+            result["target"] = json!(cfg.target);
+        }
+        Err(error) => result["error"] = json!(error),
+    }
+    result["health"] = HEALTH_STATUS.lock().await.clone();
+    if !lease_fresh().await {
+        result["health"]["blocked"] = json!(true);
+    }
+    if result["mode"] == "strict" {
+        let mut command = Command::new("iptables");
+        command.args(["-w", "-S", "INPUT"]).kill_on_drop(true);
+        let output = command.output();
+        if let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(3), output).await {
+            result["active"] = json!(
+                result["enabled"] == true
+                    && output.status.success()
+                    && String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .any(|line| line.ends_with("-j xkeen_ui_lock"))
+            );
+        } else {
+            result["active"] = json!(false);
+        }
+    }
+    let core = state
+        .core
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .name
+        .clone();
+    result["core"] = json!(core);
+    if core == "mihomo"
+        && let Ok(proxies) = mihomo_request(state, "proxies").await
+    {
+        let mut targets: Vec<String> = proxies["proxies"]
+            .as_object()
+            .into_iter()
+            .flat_map(|p| p.iter())
+            .filter(|(_, p)| !is_direct(p))
+            .map(|(name, _)| name.clone())
+            .collect();
+        targets.sort();
+        result["targets"] = json!(targets);
+    }
+    result
 }
 
 pub async fn put_traffic_guard(
@@ -108,9 +203,51 @@ pub async fn put_traffic_guard(
     if let Err(error) = crate::auth::require_admin(&state, &headers) {
         return Json(json!({"success": false, "error": error}));
     }
-    let result = if req.enabled { enable().await } else { disable().await };
+    let _guard = LOCK.lock().await;
+    let result = async {
+        let mut cfg = match config().await {
+            Ok(cfg) => cfg,
+            Err(_) if !req.enabled => GuardConfig::default(),
+            Err(error) => return Err(error),
+        };
+        if let Some(mode) = req.mode {
+            cfg.mode = mode;
+        }
+        if let Some(target) = req.target {
+            if target.len() > 512 || target.chars().any(char::is_control) {
+                return Err("Некорректное имя VPN".to_string());
+            }
+            cfg.target = target;
+        }
+        // Close the gate before changing the monitored server or enabling strict mode.
+        let _ = tokio::fs::remove_file(HEALTH).await;
+        *HEALTH_STATUS.lock().await = json!({"blocked": true, "vpn": null, "error": "VPN ещё не проверен"});
+        if req.enabled {
+            let hook = tokio::fs::read_to_string(XKEEN_HOOK).await.map_err(|e| e.to_string())?;
+            cfg.policy_mark = read_var(&hook, "policy_mark").filter(|m| !m.is_empty());
+        }
+        let previous = config().await.unwrap_or_default();
+        let previous_bytes = serde_json::to_vec_pretty(&previous).map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?;
+        crate::fsutil::write_atomic(CONFIG, bytes, crate::fsutil::PRIVATE_MODE)
+            .await
+            .map_err(|e| e.to_string())?;
+        let applied = if req.enabled { enable().await } else { disable().await };
+        if let Err(error) = applied {
+            let _ = crate::fsutil::write_atomic(CONFIG, previous_bytes, crate::fsutil::PRIVATE_MODE).await;
+            // Reapply the prior mode; health stays closed until a fresh successful probe.
+            if Path::new(GUARD_HOOK).exists() {
+                let _ = run_script(&[]).await;
+            }
+            return Err(error);
+        }
+        CHANGED.notify_one();
+        Ok::<_, String>(())
+    }
+    .await;
+    drop(_guard);
     match result {
-        Ok(()) => Json(status().await),
+        Ok(()) => Json(full_status(&state).await),
         Err(error) => {
             log("ERROR", format!("Блокировка трафика мимо прокси: {error}"));
             Json(json!({"success": false, "error": error}))
@@ -185,6 +322,9 @@ pub async fn refresh_installed() {
         return;
     };
     if installed == SCRIPT {
+        if let Err(error) = run_script(&[]).await {
+            log("WARN", format!("Не удалось восстановить защиту: {error}"));
+        }
         return;
     }
     if let Err(e) = crate::fsutil::write_atomic(path, SCRIPT, SCRIPT_MODE).await {
@@ -199,9 +339,245 @@ pub async fn refresh_installed() {
     }
 }
 
+// Health checks run in the daemon, independent of the browser. The shell watchdog also
+// expires an old success after daemon exit, restart, or a stuck probe.
+pub fn start(state: AppState) {
+    tokio::spawn(async move {
+        let mut applied_config = None;
+        loop {
+            let cfg = config().await;
+            if Path::new(GUARD_HOOK).exists() {
+                if let Ok(ref cfg) = cfg
+                    && applied_config.as_ref() != Some(cfg)
+                {
+                    let _guard = LOCK.lock().await;
+                    let _ = tokio::fs::remove_file(HEALTH).await;
+                    match run_script(&[]).await {
+                        Ok(()) => applied_config = Some(cfg.clone()),
+                        Err(error) => {
+                            *HEALTH_STATUS.lock().await = json!({"blocked": true, "error": error, "vpn": null});
+                        }
+                    }
+                }
+            } else {
+                applied_config = None;
+            }
+            if Path::new(GUARD_HOOK).exists() && cfg.as_ref().is_ok_and(|c| c.mode == GuardMode::Strict) {
+                let cfg = cfg.unwrap_or_default();
+                let result = tokio::time::timeout(Duration::from_secs(25), probe(&state, &cfg))
+                    .await
+                    .map_err(|_| "Истекло время проверки VPN".to_string())
+                    .and_then(|r| r);
+                let _guard = LOCK.lock().await;
+                // A choice made while the probe was running invalidates its answer.
+                if Path::new(GUARD_HOOK).exists() && config().await.is_ok_and(|current| current == cfg) {
+                    let (vpn, error) = match result {
+                        Ok(vpn) => {
+                            let lease = async {
+                                let uptime = tokio::fs::read_to_string("/proc/uptime")
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+                                let seconds: f64 = uptime
+                                    .split_whitespace()
+                                    .next()
+                                    .unwrap_or("")
+                                    .parse()
+                                    .map_err(|_| "Не удалось прочитать время работы")?;
+                                // A failed next probe closes immediately; this lease covers a stuck or killed daemon.
+                                crate::fsutil::write_atomic(
+                                    HEALTH,
+                                    format!("{} {}\n", std::process::id(), seconds as u64 + 35),
+                                    crate::fsutil::PRIVATE_MODE,
+                                )
+                                .await
+                                .map_err(|e| e.to_string())
+                            }
+                            .await;
+                            (Some(vpn), lease.err())
+                        }
+                        Err(error) => (None, Some(error)),
+                    };
+                    if error.is_some() {
+                        let _ = tokio::fs::remove_file(HEALTH).await;
+                    }
+                    let applied = run_script(&["tick"]).await;
+                    let error = error.or_else(|| applied.err());
+                    if error.is_some() {
+                        let _ = tokio::fs::remove_file(HEALTH).await;
+                    }
+                    *HEALTH_STATUS.lock().await = json!({"blocked": error.is_some(), "vpn": vpn, "error": error});
+                }
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+                _ = CHANGED.notified() => {},
+            }
+        }
+    });
+}
+
+async fn lease_fresh() -> bool {
+    let Ok(text) = tokio::fs::read_to_string(HEALTH).await else {
+        return false;
+    };
+    let mut fields = text.split_whitespace();
+    let pid = fields.next().and_then(|p| p.parse::<u32>().ok());
+    let until = fields.next().and_then(|p| p.parse::<f64>().ok());
+    let uptime = tokio::fs::read_to_string("/proc/uptime")
+        .await
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()));
+    pid == Some(std::process::id()) && matches!((until, uptime), (Some(until), Some(now)) if now < until)
+}
+
+fn is_direct(proxy: &Value) -> bool {
+    matches!(
+        proxy["type"].as_str().unwrap_or_default().to_ascii_lowercase().as_str(),
+        "direct" | "reject" | "rejectdrop" | "pass"
+    )
+}
+
+fn mihomo_leaf(proxies: &Value, target: &str) -> Result<String, String> {
+    let mut name = target.to_string();
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        if !seen.insert(name.clone()) {
+            return Err("Цикл в группе VPN".into());
+        }
+        let proxy = proxies.get(&name).ok_or("Выбранный VPN не найден")?;
+        if is_direct(proxy) {
+            return Err("Выбран прямой или блокирующий выход вместо VPN".into());
+        }
+        match proxy["now"].as_str() {
+            Some(next) => name = next.to_string(),
+            None if proxy["all"].is_array() => return Err("У группы VPN нет активного сервера".into()),
+            None => return Ok(name),
+        }
+    }
+}
+
+async fn mihomo_request(state: &AppState, path: &str) -> Result<Value, String> {
+    use crate::api_relay::{self, ClashTarget};
+    let (client, url, secret) = match api_relay::resolve_clash_target().await? {
+        ClashTarget::Tcp { host, port, secret } => (
+            state.http_client.clone(),
+            api_relay::build_url("http", &host, &port, path, None),
+            secret,
+        ),
+        ClashTarget::Unix { path: socket } => (
+            reqwest::Client::builder()
+                .unix_socket(socket)
+                .build()
+                .map_err(|e| e.to_string())?,
+            format!("http://localhost/{path}"),
+            None,
+        ),
+    };
+    let mut request = client.get(url).timeout(Duration::from_secs(10));
+    if let Some(secret) = secret {
+        request = request.bearer_auth(secret);
+    }
+    request
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn probe(state: &AppState, cfg: &GuardConfig) -> Result<String, String> {
+    let core = state
+        .core
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .name
+        .clone();
+    if (core == "xray" && crate::xray_servers::main_pids().is_empty()) || crate::controller::get_pid(&core).is_empty() {
+        return Err("XKeen не запущен".into());
+    }
+    let (url, budget) = {
+        let settings = state.settings.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            settings.clash_api.ping_url.clone(),
+            u64::from(settings.clash_api.ping_timeout).clamp(500, 5000),
+        )
+    };
+    if core == "xray" {
+        let (name, mut outbound) = crate::xray_servers::guard_outbound().await?;
+        let before = outbound.clone();
+        outbound["tag"] = json!("traffic-guard-vpn");
+        let samples = crate::healthchecker::probe_servers(state, &[outbound], &url, budget).await?;
+        samples.into_iter().next().ok_or("Нет результата проверки VPN")?.1?;
+        if crate::xray_servers::guard_outbound().await?.1 != before {
+            return Err("Активный VPN изменился, нужна новая проверка".into());
+        }
+        if state
+            .core
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .name
+            != core
+            || crate::xray_servers::main_pids().is_empty()
+        {
+            return Err("Ядро изменилось или остановлено".into());
+        }
+        Ok(name)
+    } else if core == "mihomo" {
+        if cfg.target.is_empty() {
+            return Err("Выберите VPN для проверки в настройках защиты".into());
+        }
+        let proxies = mihomo_request(state, "proxies").await?;
+        let leaf = mihomo_leaf(&proxies["proxies"], &cfg.target)?;
+        let path = format!(
+            "proxies/{}/delay?url={}&timeout={budget}",
+            urlencoding::encode(&leaf),
+            urlencoding::encode(&url)
+        );
+        let delay = mihomo_request(state, &path).await?;
+        if delay["delay"].as_u64().is_none_or(|ms| ms == 0) {
+            return Err("VPN недоступен".into());
+        }
+        let fresh = mihomo_request(state, "proxies").await?;
+        if mihomo_leaf(&fresh["proxies"], &cfg.target)? != leaf {
+            return Err("Активный VPN изменился, нужна новая проверка".into());
+        }
+        Ok(leaf)
+    } else {
+        Err("Ядро не поддерживается".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_guard_requests_keep_legacy_mode_and_unknown_modes_are_rejected() {
+        let req: GuardReq = serde_json::from_value(json!({"enabled": true})).unwrap();
+        assert!(req.mode.is_none());
+        assert_eq!(GuardConfig::default().mode, GuardMode::Proxy);
+        assert!(serde_json::from_value::<GuardReq>(json!({"enabled": true, "mode": "other"})).is_err());
+    }
+
+    #[test]
+    fn selected_mihomo_group_must_resolve_to_a_real_vpn_not_direct_or_a_cycle() {
+        let proxies = json!({
+            "VPN": {"type": "Selector", "now": "fallback"},
+            "fallback": {"type": "Fallback", "now": "A"},
+            "A": {"type": "Vless"},
+            "DIRECT": {"type": "Direct"},
+            "bad": {"type": "Selector", "now": "DIRECT"},
+            "cycle": {"type": "Selector", "now": "cycle"},
+            "empty": {"type": "Selector", "all": []}
+        });
+        assert_eq!(mihomo_leaf(&proxies, "VPN").unwrap(), "A");
+        for name in ["DIRECT", "bad", "cycle", "empty", "missing"] {
+            assert!(mihomo_leaf(&proxies, name).is_err(), "{name}");
+        }
+    }
 
     const HOOK: &str = "#!/bin/sh\n\nport_donor=\"80,443\"\nport_exclude=\"\"\npolicy_mark=\"0xffffaaa\"\n";
 

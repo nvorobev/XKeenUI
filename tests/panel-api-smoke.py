@@ -36,6 +36,7 @@ class Proxy(http.server.BaseHTTPRequestHandler):
         while self.rfile.readline():
             while self.rfile.readline().strip():
                 pass
+            time.sleep(getattr(self.server, 'delay', 0))
             self.wfile.write(b'HTTP/1.1 204 No Content\r\nConnection: keep-alive\r\nX-Fixture: '
                              + str(self.server.server_port).encode() + b'\r\n\r\n')
             self.wfile.flush()
@@ -252,41 +253,48 @@ sys.exit(status)
         assert config.read_text() == original, 'Pool rewrote the original config'
         files = [item['file'] for item in ok('GET', 'configs')['configs']]
         pool_path = Path('/opt/etc/xray/configs/07_pool.json')
-        assert files.index(str(pool_path)) > files.index('/opt/etc/xray/configs/06_policy.json')
-        assert request('DELETE', 'configs', {'file': str(pool_path)})[1]['success'] is False
+        assert str(pool_path) not in files
+        assert not pool_path.exists()
         assert ok('GET', 'xray/servers')['settings']['selected_id'] == servers[0]['id']
         assert traffic_fixture() == fixtures[0].server_port
-
-        # Reproduce the old release which removed routing from user files.
         store_path = Path('/opt/etc/xkeen/xray-servers.json')
-        old_store = json.loads(store_path.read_text())
-        stripped = json.loads(original)
-        stripped.pop('routing')
-        stripped = json.dumps(stripped)
-        old_store['originals'] = [{'path': str(config), 'before': original, 'after': stripped}]
-        config.write_text(stripped)
-        legacy_path = pool_path.with_name('zz-xkeen-ui-servers-tail.json')
-        pool_path.rename(legacy_path)
-        store_path.write_text(json.dumps(old_store))
-        restart_panel()
-        for _ in range(100):
-            if pool_path.exists() and not legacy_path.exists() and ok('GET', 'xray/servers')['settings']:
-                break
-            time.sleep(.1)
-        assert config.read_text() == original, 'Migration did not restore original routing'
-        assert pool_path.exists() and not legacy_path.exists()
-        assert json.loads(store_path.read_text())['originals'] == []
-        assert traffic_fixture() == fixtures[0].server_port
-        print('PASS: legacy pool migration restores 05_routing.json and creates visible 07_pool.json', flush=True)
+        assert json.loads(store_path.read_text())['config_switching'] is True
 
-        pool_path.unlink()
+        # Reproduce both old generated-file formats, including the oldest release
+        # which removed routing from the user's source file.
+        for old_name in ['07_pool.json', 'zz-xkeen-ui-servers-tail.json']:
+            legacy_settings = {**settings, 'selected_id': servers[1]['id']}
+            legacy_routing = json.loads(original)['routing']
+            for rule in legacy_routing['rules']:
+                if rule.get('outboundTag') == 'proxy':
+                    rule.pop('outboundTag'); rule['balancerTag'] = 'xkeen-ui-servers'
+            alias = lambda server: 'xkeen-ui-server-' + server['id'] + '.'
+            legacy_routing['balancers'] = [{'tag':'xkeen-ui-servers', 'selector':[alias(servers[1])], 'strategy':{'type':'random'}}]
+            legacy_value = {'routing':legacy_routing, 'api':{'tag':'xkeen-ui-api','listen':'127.0.0.1:10085','services':['RoutingService']},
+                            'outbounds':[{'tag':alias(server), **server['outbound']} for server in servers]}
+            managed = json.dumps(legacy_value)
+            stripped = json.loads(original); stripped.pop('routing'); stripped = json.dumps(stripped)
+            config.write_text(stripped)
+            legacy_path = pool_path.with_name(old_name); legacy_path.write_text(managed)
+            store_path.write_text(json.dumps({'settings':legacy_settings,'managed':managed,'api_address':'127.0.0.1:10085',
+                'originals':[{'path':str(config),'before':original,'after':stripped}]}))
+            restart_panel()
+            for _ in range(100):
+                if not legacy_path.exists() and ok('GET','xray/servers')['settings']:
+                    break
+                time.sleep(.1)
+            assert not pool_path.exists() and not legacy_path.exists()
+            assert json.loads(config.read_text())['routing'] == json.loads(original)['routing']
+            assert traffic_fixture() == fixtures[1].server_port
+            assert json.loads(store_path.read_text())['config_switching'] is True
+            ok('POST','xray/servers/select',{'id':servers[0]['id']})
+        print('PASS: migration restores source routing, applies selected outbound and removes both generated pool formats',flush=True)
+
+        # No pool file should be recreated on startup.
         restart_panel()
-        for _ in range(100):
-            if pool_path.exists() and ok('GET', 'xray/servers')['settings']:
-                break
-            time.sleep(.1)
-        assert pool_path.exists() and config.read_text() == original
-        print('PASS: deleted pool file is rebuilt without changing original routing', flush=True)
+        assert not pool_path.exists()
+        assert traffic_fixture() == fixtures[0].server_port
+        print('PASS: group monitoring survives restart without generating 07_pool.json',flush=True)
 
         restarts_before = Path('/opt/native-restarts').read_text().count('restart')
         ok('POST', 'xray/servers/select', {'id': servers[1]['id']})
@@ -294,14 +302,14 @@ sys.exit(status)
         assert Path('/opt/native-restarts').read_text().count('restart') == restarts_before + 1
         assert traffic_fixture() == fixtures[1].server_port
         ok('PUT', 'xray/servers', {**settings, 'auto': True, 'selected_id': servers[1]['id']})
-        routes = json.loads(original)
+        routes = json.loads(config.read_text())
         routes['routing']['rules'].insert(0, {'type': 'field', 'domain': ['domain:bypass.test'], 'outboundTag': 'bypass'})
         future = json.dumps(routes)
-        live_files = [config, pool_path, store_path]
+        live_files = [config, store_path]
         snapshot_files = [path.read_bytes() for path in live_files]
         preview = ok('POST', 'route-test', {'targets': ['bypass.test', 'other.test'], 'preview': {'file': str(config), 'content': future}})
         assert preview['results'][0]['outbound'] == 'bypass', preview
-        assert preview['results'][1]['balancer']['tag'] == 'xkeen-ui-servers', preview
+        assert preview['results'][1]['outbound'] == 'proxy' and preview['results'][1]['balancer'] is None, preview
         assert [path.read_bytes() for path in live_files] == snapshot_files
         assert traffic_fixture('bypass.test') == fixtures[1].server_port
         assert ok('GET', 'xray/servers')['settings']['selected_id'] == servers[1]['id']
@@ -361,6 +369,36 @@ sys.exit(status)
         assert len(ok('GET', 'xray/servers')['servers']) == 2
         print('PASS: transaction recovery, pool activation, manual selection restarts Xray and moves actual traffic, disabling', flush=True)
 
+        # Observe actual main-core traffic, not just selected_id/API acknowledgements.
+        fixtures[0].delay = .12
+        fixtures[1].delay = .01
+        auto_settings = {**settings, 'auto':True, 'prefer_fastest':True, 'latency_samples':3,
+                         'interval_secs':3600, 'failure_threshold':1, 'timeout_ms':1000}
+        ok('PUT','xray/servers', auto_settings)
+        for _ in range(3): ok('POST','xray/servers/check')
+        measured = ok('GET','xray/servers')
+        assert measured['settings']['selected_id'] == servers[1]['id'], measured
+        assert traffic_fixture() == fixtures[1].server_port
+        assert all(p['average_ms'] is not None and p['checks'] == 3 for p in measured['probes']), measured
+        assert not pool_path.exists()
+        fixtures[0].delay = .005
+        fixtures[1].delay = .12
+        auto_settings.update(selected_id=servers[1]['id'],prefer_fastest=False)
+        ok('PUT','xray/servers', auto_settings)
+        for _ in range(3): ok('POST','xray/servers/check')
+        assert ok('GET','xray/servers')['settings']['selected_id'] == servers[1]['id']
+        fixtures[1].shutdown(); fixtures[1].server_close()
+        ok('POST','xray/servers/check')
+        assert ok('GET','xray/servers')['settings']['selected_id'] == servers[0]['id']
+        assert traffic_fixture() == fixtures[0].server_port
+        fixture_port = fixtures[1].server_port
+        fixtures[1] = http.server.ThreadingHTTPServer(('127.0.0.1',fixture_port),Proxy)
+        threading.Thread(target=fixtures[1].serve_forever,daemon=True).start()
+        fixtures[0].delay = 0
+        ok('DELETE','xray/servers')
+        original = config.read_text()
+        print('PASS: configurable rolling averages move actual traffic to fastest; optional flag keeps healthy server; failure switches natively',flush=True)
+
         ok('PUT', 'xray/servers', settings)
         ok('POST', 'xray/servers/activate', {'id': servers[1]['id']})
         assert ok('GET', 'xray/servers')['settings'] is None
@@ -397,7 +435,7 @@ sys.exit(status)
         Path('/opt/fail-start').touch()
         failure = ok('GET', 'xray/servers')
         assert failure['settings'] is None
-        status, failure = request('PUT', 'xray/servers', settings)
+        status, failure = request('PUT', 'xray/servers', {**settings, 'selected_id':servers[1]['id']})
         assert status == 200 and not failure['success'], failure
         assert not journal.exists(), 'Completed rollback left a blocking journal'
         assert config.read_text() == original
@@ -412,6 +450,7 @@ sys.exit(status)
         alternate['routing']['rules'] = [{'type': 'field', 'domain': ['full:pool.test'], 'outboundTag': 'proxy'}]
         alternate_text = json.dumps(alternate)
         config.write_text(alternate_text)
+        ok('POST','control',{'action':'hardRestart'})
         ok('PUT', 'xray/servers', {**settings, 'selected_id': servers[1]['id']})
         assert config.read_text() == alternate_text
         assert traffic_fixture('pool.test') == fixtures[1].server_port
@@ -419,7 +458,7 @@ sys.exit(status)
         ok('DELETE', 'xray/servers')
         config.write_text(original)
         ok('POST', 'control', {'action': 'hardRestart'})
-        print('PASS: 07_pool.json preserves the original default exit for unmatched traffic', flush=True)
+        print('PASS: source outbound switching preserves the original default exit for unmatched traffic', flush=True)
 
         ok('POST', 'auth/reset')
         assert request('GET', 'settings')[0] == 401
@@ -466,6 +505,15 @@ sys.exit(status)
         assert request('PATCH', 'settings', {'auth': {'enabled': False}})[1]['success'] is False
         assert request('POST', 'auth/reset')[0] == 403
         assert request('PUT', 'traffic-guard', {'enabled': True})[1]['success'] is False
+        for path in ['rci/', 'proxies/%2e%2e/rci/', 'proxies/%252e%252e/rci/']:
+            req = urllib.request.Request(f'http://127.0.0.1:{api_port}/clash/{path}',method='POST',data=b'{}',
+                headers={'Content-Type':'application/json','X-Clash-Port':'79','X-Ndma-Tkn':'inert-test-token'})
+            try:
+                client.open(req,timeout=10)
+                raise AssertionError('Relay allowed an administrative router path')
+            except urllib.error.HTTPError as error:
+                assert error.code == 403, error
+
         # The config editor cannot reach the panel's own state or widen its file access.
         panel_config = '/opt/etc/xkeen/xkeen-ui.json'
         assert request('PUT', 'configs', {'file': panel_config, 'content': '{}'})[1]['success'] is False
@@ -520,7 +568,7 @@ sys.exit(status)
             def clash(method, endpoint, body=None):
                 req = urllib.request.Request(f'http://127.0.0.1:{api_port}/clash/{endpoint}', method=method,
                     data=json.dumps(body).encode() if body is not None else None,
-                    headers={'Content-Type': 'application/json', 'X-Clash-Port': str(controller_port), 'X-Clash-Secret': 'local-test-secret'})
+                    headers={'Content-Type': 'application/json', 'X-Clash-Port': '79'})
                 with client.open(req, timeout=20) as response:
                     raw = response.read()
                     return json.loads(raw) if raw else None

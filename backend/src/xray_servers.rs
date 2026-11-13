@@ -6,13 +6,11 @@ use axum::Json;
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::fs;
-use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
 
 const STORE: &str = "/opt/etc/xkeen/xray-servers.json";
@@ -20,7 +18,6 @@ const LIBRARY: &str = "/opt/etc/xkeen/xray-server-library.json";
 const JOURNAL: &str = "/opt/etc/xkeen/xray-servers-transaction.json";
 const MANAGED_NAME: &str = "07_pool.json";
 const LEGACY_MANAGED_NAME: &str = "zz-xkeen-ui-servers-tail.json";
-const BALANCER: &str = "xkeen-ui-servers";
 const PREFIX: &str = "xkeen-ui-server-";
 // Top-level sections moved into the managed file while the pool is enabled.
 const OWNED_KEYS: [&str; 2] = ["routing", "api"];
@@ -44,6 +41,8 @@ pub struct Settings {
     pub servers: Vec<Server>,
     pub selected_id: String,
     pub auto: bool,
+    pub prefer_fastest: bool,
+    pub latency_samples: usize,
     pub interval_secs: u64,
     // Older stores and clients only contain interval_secs.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +59,8 @@ impl Default for Settings {
             servers: Vec::new(),
             selected_id: String::new(),
             auto: false,
+            prefer_fastest: false,
+            latency_samples: 5,
             interval_secs: 60,
             interval_ms: None,
             failure_threshold: 3,
@@ -86,8 +87,13 @@ struct FileChange {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Installed {
     settings: Settings,
+    #[serde(default)]
+    config_switching: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     api_address: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     managed: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     originals: Vec<FileChange>,
     #[serde(default)]
     selected_since: Option<i64>,
@@ -97,6 +103,8 @@ struct Installed {
 pub struct Probe {
     pub id: String,
     pub latency_ms: Option<u64>,
+    pub average_ms: Option<u64>,
+    pub checks: usize,
     pub error: Option<String>,
 }
 
@@ -104,6 +112,7 @@ pub struct Probe {
 struct Runtime {
     installed: Option<Installed>,
     probes: Vec<Probe>,
+    history: HashMap<String, VecDeque<Option<u64>>>,
     failures: u32,
     error: Option<String>,
     last_check: Option<String>,
@@ -118,9 +127,6 @@ struct Document {
     value: Value,
 }
 
-fn alias(id: &str) -> String {
-    format!("{PREFIX}{id}.")
-}
 pub(crate) fn is_managed_file(path: &Path) -> bool {
     path == managed_path() || path == legacy_managed_path()
 }
@@ -144,11 +150,7 @@ fn has_config_ext(path: &Path) -> bool {
         .and_then(|v| v.to_str())
         .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "json" | "jsonc"))
 }
-fn owned_key(value: &Value) -> Option<&'static str> {
-    OWNED_KEYS
-        .into_iter()
-        .find(|key| value.get(key).is_some_and(|v| !v.is_null()))
-}
+
 fn parse_object(text: &str) -> Option<Value> {
     serde_json::from_str::<Value>(&crate::jsonc::strip_jsonc(text))
         .ok()
@@ -156,6 +158,9 @@ fn parse_object(text: &str) -> Option<Value> {
 }
 
 fn validate_settings(settings: &Settings) -> Result<(), String> {
+    if !(1..=60).contains(&settings.latency_samples) {
+        return Err("Число проверок для среднего пинга: от 1 до 60".into());
+    }
     if settings.target_tag.trim().is_empty() || settings.target_tag.starts_with(PREFIX) {
         return Err("Выберите существующий outbound, трафиком которого нужно управлять".into());
     }
@@ -243,22 +248,7 @@ async fn documents() -> Result<Vec<Document>, String> {
 
 // Earlier user routing/api remain intact; the managed file supplies the effective
 // pool configuration. Later routing/api or outbounds could override it.
-fn check_layout(docs: &[Document]) -> Result<(), String> {
-    let managed = managed_path();
-    for doc in docs.iter().filter(|d| d.path != managed) {
-        if doc.path > managed
-            && (owned_key(&doc.value).is_some() || doc.value["outbounds"].as_array().is_some_and(|v| !v.is_empty()))
-        {
-            return Err(format!(
-                "{} загружается после {MANAGED_NAME} и перекрывает пул серверов; переименуйте файл",
-                doc.path.display()
-            ));
-        }
-    }
-    Ok(())
-}
 
-// Xray prepends new outbounds unless the filename contains `tail`, and replaces matching tags.
 fn merged_outbounds(docs: &[Document]) -> Vec<Value> {
     let mut result: Vec<Value> = Vec::new();
     for doc in docs {
@@ -286,136 +276,6 @@ fn merged_outbounds(docs: &[Document]) -> Vec<Value> {
         result = prepend;
     }
     result
-}
-
-fn pool_document(settings: &Settings, mut value: Value) -> Result<Value, String> {
-    value["outbounds"] = Value::Array(
-        settings
-            .servers
-            .iter()
-            .map(|s| {
-                let mut outbound = s.outbound.clone();
-                outbound["tag"] = alias(&s.id).into();
-                outbound
-            })
-            .collect(),
-    );
-    let balancers = value
-        .pointer_mut("/routing/balancers")
-        .and_then(Value::as_array_mut)
-        .ok_or("Нет списка балансеров")?;
-    balancers.retain(|v| v["tag"] != BALANCER);
-    // Singleton prefix ending in '.' prevents prefix collisions. Disk state pins the chosen server even before the UI daemon reconnects.
-    balancers
-        .push(json!({"tag": BALANCER, "selector": [alias(&settings.selected_id)], "strategy": {"type": "random"}}));
-    Ok(value)
-}
-
-fn prepare(settings: &Settings, docs: &[Document]) -> Result<(Value, Vec<FileChange>, String), String> {
-    prepare_pool(settings, docs, false)
-}
-
-fn prepare_pool(
-    settings: &Settings, docs: &[Document], allow_unused: bool,
-) -> Result<(Value, Vec<FileChange>, String), String> {
-    if docs.iter().any(|d| is_managed_file(&d.path)) {
-        return Err(format!(
-            "Найден {MANAGED_NAME} или файл, загружаемый после него. Если это остаток прежней настройки, нажмите «Отключить управление»"
-        ));
-    }
-    check_layout(docs)?;
-    let outbounds = merged_outbounds(docs);
-    if !outbounds
-        .iter()
-        .any(|v| v["tag"] == settings.target_tag && standalone(v))
-    {
-        return Err("Выбранный исходный proxy outbound не найден".into());
-    }
-    let mut routing = docs
-        .iter()
-        .rev()
-        .find_map(|d| d.value.get("routing").filter(|v| !v.is_null()))
-        .cloned()
-        .unwrap_or(json!({}));
-    if routing
-        .get("script")
-        .and_then(Value::as_str)
-        .is_some_and(|v| !v.is_empty())
-    {
-        return Err("Маршрутизация через script не поддерживается".into());
-    }
-    if !routing.is_object() {
-        return Err("Неверный routing".into());
-    }
-    if routing.get("balancers").is_none() {
-        routing["balancers"] = json!([]);
-    }
-    if routing["balancers"]
-        .as_array()
-        .is_none_or(|v| v.iter().any(|b| b["tag"] == BALANCER))
-    {
-        return Err("Имя балансера xkeen-ui-servers уже занято или balancers не является массивом".into());
-    }
-    if routing.get("rules").is_none() {
-        routing["rules"] = json!([]);
-    }
-    let rules = routing["rules"]
-        .as_array_mut()
-        .ok_or("routing.rules должен быть массивом")?;
-    let mut matched = false;
-    for rule in rules.iter_mut() {
-        if rule["outboundTag"] == settings.target_tag {
-            rule.as_object_mut().ok_or("Неверное правило")?.remove("outboundTag");
-            rule["balancerTag"] = BALANCER.into();
-            matched = true;
-        }
-    }
-    if outbounds.first().is_some_and(|v| v["tag"] == settings.target_tag) {
-        rules.push(json!({"type": "field", "network": "tcp,udp", "balancerTag": BALANCER}));
-        matched = true;
-    } else {
-        // 07_pool.json has no `tail` suffix, so Xray prepends its new outbounds.
-        // Pin the original default explicitly instead of changing unmatched traffic.
-        let default_tag = outbounds
-            .first()
-            .and_then(|v| v["tag"].as_str())
-            .filter(|s| !s.is_empty())
-            .ok_or("Для пула задайте tag исходному outbound по умолчанию")?;
-        rules.push(json!({"type": "field", "network": "tcp,udp", "outboundTag": default_tag}));
-    }
-    if !matched && !allow_unused {
-        return Err("Outbound не используется напрямую в правилах или как выход по умолчанию; выберите другой".into());
-    }
-    let mut api = docs
-        .iter()
-        .rev()
-        .find_map(|d| d.value.get("api").filter(|v| !v.is_null()))
-        .cloned()
-        .unwrap_or(json!({"tag": "xkeen-ui-api", "listen": "127.0.0.1:10085", "services": []}));
-    let address = api["listen"]
-        .as_str()
-        .ok_or("Задайте локальный api.listen, например 127.0.0.1:10085")?
-        .to_string();
-    let parsed: SocketAddr = address
-        .parse()
-        .map_err(|_| "api.listen должен быть локальным IP:порт")?;
-    if !parsed.ip().is_loopback() || parsed.port() == 0 {
-        return Err("API Xray должен слушать loopback-адрес с ненулевым портом".into());
-    }
-    let services = api["services"]
-        .as_array_mut()
-        .ok_or("api.services должен быть массивом")?;
-    if !services
-        .iter()
-        .any(|v| v.as_str().is_some_and(|s| s.eq_ignore_ascii_case("RoutingService")))
-    {
-        services.push("RoutingService".into());
-    }
-    Ok((
-        pool_document(settings, json!({"routing": routing, "api": api}))?,
-        Vec::new(),
-        address,
-    ))
 }
 
 async fn read_optional(path: &Path) -> Result<Option<String>, String> {
@@ -547,48 +407,47 @@ async fn recover_running(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-async fn api_override(address: &str, id: &str) -> Result<(), String> {
-    run_api(&["bo", "--server", address, "-b", BALANCER, &alias(id)]).await?;
-    let output = run_api(&["bi", "--server", address, "--json", BALANCER]).await?;
-    let result: Value = serde_json::from_slice(&output).map_err(|_| "Xray API вернул неверный ответ")?;
-    if result.pointer("/balancer/override/target").and_then(Value::as_str) != Some(alias(id).as_str()) {
-        return Err("Xray не подтвердил выбор сервера".into());
-    }
-    Ok(())
-}
-
-async fn run_api(args: &[&str]) -> Result<Vec<u8>, String> {
-    let mut cmd = Command::new("xray");
-    cmd.arg("api").args(args).kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(5), cmd.output())
-        .await
-        .map_err(|_| "Таймаут API Xray")?
-        .map_err(|e| format!("API Xray: {e}"))?;
-    if !output.status.success() {
-        let detail: String = String::from_utf8_lossy(&output.stderr).chars().take(500).collect();
-        return Err(format!("API Xray недоступен ({}): {}", output.status, detail.trim()));
-    }
-    Ok(output.stdout)
+pub(crate) fn main_pids() -> Vec<i32> {
+    controller::get_pid("xray")
+        .into_iter()
+        .filter(|pid| {
+            let Ok(args) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                return false;
+            };
+            !args.is_empty()
+                && !args.windows(b"healthcheck-".len()).any(|w| w == b"healthcheck-")
+                && !args
+                    .split(|b| *b == 0)
+                    .any(|arg| matches!(arg, b"api" | b"version" | b"-test"))
+        })
+        .collect()
 }
 
 async fn wait_ready(installed: &Installed) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
-    loop {
-        match api_override(&installed.api_address, &installed.settings.selected_id).await {
-            Ok(()) => return Ok(()),
-            Err(error) if tokio::time::Instant::now() >= deadline => {
-                return Err(format!("Xray не подтвердил запуск пула: {error}"));
-            }
-            Err(_) => {}
-        }
-        tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    if main_pids().is_empty() {
+        return Err("Основной Xray не запустился".into());
     }
+    ensure_managed(installed).await
 }
 
 async fn restart(state: &AppState) -> Result<(), String> {
-    // Do not kill an init script halfway through rebuilding policy/firewall rules.
-    // Callers own a detached task and ACTION_LOCK until the command completes.
-    controller::restart_service(state).await
+    let before = main_pids();
+    controller::restart_service(state).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let running = main_pids();
+        if !running.is_empty() && running.iter().all(|pid| !before.contains(pid)) {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if main_pids().iter().any(|pid| running.contains(pid)) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("Перезапуск не подтверждён: новый основной процесс Xray не запущен".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 fn core_is_xray(state: &AppState) -> Result<bool, String> {
@@ -599,7 +458,7 @@ fn require_xray(state: &AppState) -> Result<(), String> {
     if !core_is_xray(state)? {
         return Err("Сначала выберите ядро Xray".into());
     }
-    if controller::get_pid("xray").is_empty() {
+    if main_pids().is_empty() {
         return Err("Сначала запустите Xray".into());
     }
     Ok(())
@@ -613,121 +472,142 @@ async fn disk_change(path: PathBuf, after: Option<String>) -> Result<FileChange,
     })
 }
 
-async fn save(state: &AppState, mut settings: Settings) -> Result<(), String> {
+async fn save(state: &AppState, settings: Settings) -> Result<(), String> {
     require_xray(state)?;
     validate_settings(&settings)?;
     preserve_servers(&settings.servers).await?;
     let previous = RUNTIME.lock().await.installed.clone();
-    if let Some(ref old) = previous {
-        if !settings.servers.iter().any(|s| s.id == old.settings.selected_id) {
-            return Err("Сначала выберите другой сервер, затем удалите текущий".into());
-        }
-        // A browser draft may predate automatic failover. Saving settings must not undo it.
-        settings.selected_id = old.settings.selected_id.clone();
-    }
-    if let Some(ref old) = previous {
-        // Editing the active server must not cut traffic with a valid-but-dead outbound.
-        let outbound = |s: &Settings| {
-            s.servers
-                .iter()
-                .find(|v| v.id == old.settings.selected_id)
-                .map(|v| v.outbound.clone())
-        };
-        if outbound(&settings) != outbound(&old.settings) {
-            let mut single = settings.clone();
-            single.servers.retain(|v| v.id == old.settings.selected_id);
-            let results = probes(state, &single).await?;
-            if results.first().is_none_or(|p| p.latency_ms.is_none()) {
-                return Err("Изменённый активный сервер не прошёл проверку; изменения не применены".into());
-            }
-        }
-    }
-    let docs = documents().await?;
-    let (value, originals, api_address, mut changes) = if let Some(ref old) = previous {
+    if let Some(old) = &previous {
+        ensure_managed(old).await?;
         if settings.target_tag != old.settings.target_tag {
             return Err("Перед сменой исходного outbound отключите управление серверами".into());
         }
-        ensure_managed(old).await?;
-        let value: Value = serde_json::from_str(&old.managed).map_err(|e| e.to_string())?;
-        (
-            pool_document(&settings, value)?,
-            old.originals.clone(),
-            old.api_address.clone(),
-            Vec::new(),
-        )
-    } else {
-        let (value, originals, address) = prepare(&settings, &docs)?;
-        (value, originals.clone(), address, originals)
-    };
-    let installed = Installed {
-        selected_since: previous
-            .as_ref()
-            .and_then(|old| old.selected_since)
-            .or(Some(chrono::Utc::now().timestamp())),
-        settings,
-        managed: pretty(&value)?,
-        originals,
-        api_address,
-    };
-    // Validate the complete proposed config set BEFORE touching live files.
-    let mut proposed = Vec::new();
-    for doc in &docs {
-        if doc.path == managed_path() {
-            continue;
+        if !settings.servers.iter().any(|s| s.id == old.settings.selected_id) {
+            return Err("Сначала выберите другой сервер, затем удалите текущий".into());
         }
-        let text = changes
-            .iter()
-            .find(|c| c.path == doc.path)
-            .and_then(|c| c.after.as_ref())
-            .unwrap_or(&doc.text);
-        proposed.push(crate::configs::ConfigReq {
-            file: doc.path.to_string_lossy().into(),
-            content: crate::jsonc::strip_jsonc(text),
-        });
     }
-    proposed.push(crate::configs::ConfigReq {
-        file: managed_path().to_string_lossy().into(),
-        content: installed.managed.clone(),
-    });
-    crate::configs::validate_core(&proposed).await.map_err(|e| {
-        let reason: String = e.chars().take(400).collect();
-        format!("Xray отклонил конфигурацию, активные файлы не изменены: {reason}")
-    })?;
-    let needs_restart = previous.as_ref().is_none_or(|old| old.managed != installed.managed);
-    changes.push(disk_change(managed_path(), Some(installed.managed.clone())).await?);
-    changes.push(disk_change(PathBuf::from(STORE), Some(pretty(&installed)?)).await?);
-    commit_files(&changes, Path::new(JOURNAL)).await?;
-    let result = if needs_restart {
-        match restart(state).await {
-            Ok(()) => wait_ready(&installed).await,
-            Err(e) => Err(e),
-        }
-    } else {
-        api_override(&installed.api_address, &installed.settings.selected_id).await
-    };
-    if let Err(error) = result {
-        return Err(restore_after_failure(state, &changes, previous.as_ref(), needs_restart, error).await);
-    }
-    {
-        let mut runtime = RUNTIME.lock().await;
-        runtime.installed = Some(installed);
-        runtime.probes.clear();
-        runtime.failures = 0;
-        runtime.error = None;
-        runtime.ready = true;
-    }
-    finish_journal(Path::new(JOURNAL)).await?;
-    CHECK_CHANGED.notify_one();
-    Ok(())
+    apply_selection(state, settings, previous.as_ref(), false).await
 }
 
 async fn ensure_managed(installed: &Installed) -> Result<(), String> {
-    if read_optional(&managed_path()).await?.as_ref() != Some(&installed.managed) {
-        return Err(format!(
-            "{MANAGED_NAME} изменён вне окна серверов. Автопереключение приостановлено; отключите управление, чтобы восстановить исходные настройки"
-        ));
+    if !installed.config_switching {
+        // Only used while rolling back a migration from older versions.
+        if read_optional(&managed_path()).await?.as_ref() != Some(&installed.managed)
+            && read_optional(&legacy_managed_path()).await?.as_ref() != Some(&installed.managed)
+        {
+            return Err("Старый конфиг пула изменён извне".into());
+        }
+        return Ok(());
     }
-    check_layout(&documents().await?)
+    let docs = documents().await?;
+    if docs.iter().any(|doc| is_managed_file(&doc.path)) {
+        return Err("Остался старый конфиг пула; перезапустите панель для переноса".into());
+    }
+    let active = merged_outbounds(&docs)
+        .into_iter()
+        .find(|o| o["tag"] == installed.settings.target_tag)
+        .ok_or("Исходный outbound удалён")?;
+    let selected = installed
+        .settings
+        .servers
+        .iter()
+        .find(|s| s.id == installed.settings.selected_id)
+        .ok_or("Активный сервер не найден")?;
+    if !same_outbound(&active, &selected.outbound) {
+        return Err("Активный outbound изменён вне окна серверов; отключите управление и обновите список".into());
+    }
+    Ok(())
+}
+
+async fn apply_selection(
+    state: &AppState, settings: Settings, previous: Option<&Installed>, measured: bool,
+) -> Result<(), String> {
+    let server = settings
+        .servers
+        .iter()
+        .find(|s| s.id == settings.selected_id)
+        .ok_or("Сервер не найден")?;
+    let docs = documents().await?;
+    let change = activation_change(&docs, &settings.target_tag, server)?;
+    let source_changed = parse_object(change.before.as_deref().unwrap_or_default())
+        != parse_object(change.after.as_deref().unwrap_or_default());
+    if source_changed && !measured {
+        let mut single = settings.clone();
+        single.servers = vec![server.clone()];
+        let results = probes(state, &single).await?;
+        if results.first().is_none_or(|p| p.latency_ms.is_none()) {
+            return Err("Сервер не прошёл проверку; текущее подключение сохранено".into());
+        }
+    }
+    let selected_changed = previous.is_none_or(|p| p.settings.selected_id != settings.selected_id);
+    let installed = Installed {
+        selected_since: if source_changed || (previous.is_some() && selected_changed) {
+            Some(chrono::Utc::now().timestamp())
+        } else {
+            previous.and_then(|p| p.selected_since)
+        },
+        settings,
+        config_switching: true,
+        managed: String::new(),
+        api_address: String::new(),
+        originals: vec![],
+    };
+    let mut changes = Vec::new();
+    if source_changed {
+        changes.push(change);
+    }
+    changes.push(disk_change(PathBuf::from(STORE), Some(pretty(&installed)?)).await?);
+    changes.retain(|c| c.before != c.after);
+    validate_documents(&proposed_documents(&docs, &changes)?).await?;
+    commit_files(&changes, Path::new(JOURNAL)).await?;
+    // A chosen server is applied by a native restart for manual AND automatic switches.
+    // Metadata-only settings saves do not restart an unchanged working connection.
+    let needs_restart =
+        source_changed || previous.is_some_and(|p| p.settings.selected_id != installed.settings.selected_id);
+    let result = async {
+        if needs_restart {
+            restart(state).await?;
+        }
+        wait_ready(&installed).await
+    }
+    .await;
+    if let Err(error) = result {
+        return Err(restore_after_failure(state, &changes, previous, needs_restart, error).await);
+    }
+    {
+        let mut runtime = RUNTIME.lock().await;
+        if previous.is_none_or(|p| {
+            p.settings.latency_samples != installed.settings.latency_samples
+                || p.settings.probe_url != installed.settings.probe_url
+        }) {
+            runtime.history.clear();
+            runtime.probes.clear();
+        }
+        let ids: HashSet<_> = installed.settings.servers.iter().map(|s| s.id.clone()).collect();
+        runtime.history.retain(|id, _| {
+            ids.contains(id)
+                && previous.is_none_or(|old| {
+                    let before = old.settings.servers.iter().find(|s| &s.id == id);
+                    let after = installed.settings.servers.iter().find(|s| &s.id == id);
+                    matches!((before, after), (Some(a), Some(b)) if same_outbound(&a.outbound, &b.outbound))
+                })
+        });
+        let measured_ids: HashSet<_> = runtime.history.keys().cloned().collect();
+        runtime.probes.retain(|probe| measured_ids.contains(&probe.id));
+        runtime.installed = Some(installed);
+        runtime.failures = 0;
+        runtime.error = None;
+        runtime.ready = true;
+        if needs_restart {
+            runtime.last_switch = Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        }
+    }
+    finish_journal(Path::new(JOURNAL)).await?;
+    // Let the background loop keep its configured pause after an automatic switch.
+    if !measured {
+        CHECK_CHANGED.notify_one();
+    }
+    Ok(())
 }
 
 async fn restore_after_failure(
@@ -753,7 +633,7 @@ async fn restore_after_failure(
             }
         }
     } else if let Some(old) = previous {
-        api_override(&old.api_address, &old.settings.selected_id).await
+        wait_ready(old).await
     } else {
         Ok(())
     };
@@ -788,11 +668,15 @@ async fn probes(state: &AppState, settings: &Settings) -> Result<Vec<Probe>, Str
                     Ok(latency_ms) => Probe {
                         id,
                         latency_ms: Some(latency_ms),
+                        average_ms: None,
+                        checks: 0,
                         error: None,
                     },
                     Err(error) => Probe {
                         id,
                         latency_ms: None,
+                        average_ms: None,
+                        checks: 0,
                         error: Some(error),
                     },
                 })
@@ -801,26 +685,46 @@ async fn probes(state: &AppState, settings: &Settings) -> Result<Vec<Probe>, Str
 }
 
 // Missing samples are inconclusive. Only consecutive measured failures trigger failover.
+fn average_samples(samples: &mut [Probe], history: &mut HashMap<String, VecDeque<Option<u64>>>, limit: usize) {
+    for sample in samples {
+        let values = history.entry(sample.id.clone()).or_default();
+        values.push_back(sample.latency_ms);
+        while values.len() > limit {
+            values.pop_front();
+        }
+        let valid: Vec<u64> = values.iter().filter_map(|v| *v).collect();
+        sample.checks = values.len();
+        sample.average_ms = (!valid.is_empty()).then(|| valid.iter().sum::<u64>() / valid.len() as u64);
+    }
+}
+
 fn choose(settings: &Settings, probes: &[Probe], failures: &mut u32) -> Option<String> {
     let current = probes.iter().find(|p| p.id == settings.selected_id)?;
-    if current.latency_ms.is_some() {
-        *failures = 0;
-        return None;
-    }
     if !settings.auto {
         *failures = 0;
         return None;
     }
-    *failures = failures.saturating_add(1);
-    if *failures < settings.failure_threshold {
+    if current.latency_ms.is_some() {
+        *failures = 0;
+    } else {
+        *failures = failures.saturating_add(1);
+        if !settings.prefer_fastest && *failures < settings.failure_threshold {
+            return None;
+        }
+    }
+    if current.latency_ms.is_some() && !settings.prefer_fastest {
         return None;
     }
-    probes
+    let fastest = probes
         .iter()
-        .filter(|p| p.id != settings.selected_id && settings.servers.iter().any(|s| s.id == p.id))
-        .filter_map(|p| p.latency_ms.map(|latency| (latency, &p.id)))
-        .min()
-        .map(|(_, id)| id.clone())
+        .filter(|p| p.latency_ms.is_some() && settings.servers.iter().any(|s| s.id == p.id))
+        .filter_map(|p| {
+            p.average_ms
+                .or(p.latency_ms)
+                .map(|ms| (ms, p.id != settings.selected_id, &p.id))
+        })
+        .min()?;
+    (fastest.2 != &settings.selected_id).then(|| fastest.2.clone())
 }
 
 async fn select(state: &AppState, id: &str, measured: bool) -> Result<(), String> {
@@ -833,56 +737,12 @@ async fn select(state: &AppState, id: &str, measured: bool) -> Result<(), String
         .clone()
         .ok_or("Сначала сохраните серверы")?;
     ensure_managed(&previous).await?;
-    let server = previous
-        .settings
-        .servers
-        .iter()
-        .find(|s| s.id == id)
-        .ok_or("Сервер не найден")?;
-    if !measured {
-        let mut settings = previous.settings.clone();
-        settings.servers = vec![server.clone()];
-        let results = probes(state, &settings).await?;
-        if results.first().is_none_or(|p| p.latency_ms.is_none()) {
-            return Err("Сервер не прошёл проверку доступности; текущий сервер сохранён".into());
-        }
+    if !previous.settings.servers.iter().any(|s| s.id == id) {
+        return Err("Сервер не найден".into());
     }
-    let mut installed = previous.clone();
-    installed.settings.selected_id = id.to_string();
-    installed.selected_since = Some(chrono::Utc::now().timestamp());
-    let value = pool_document(
-        &installed.settings,
-        serde_json::from_str(&previous.managed).map_err(|e| e.to_string())?,
-    )?;
-    installed.managed = pretty(&value)?;
-    let changes = vec![
-        disk_change(managed_path(), Some(installed.managed.clone())).await?,
-        disk_change(PathBuf::from(STORE), Some(pretty(&installed)?)).await?,
-    ];
-    commit_files(&changes, Path::new(JOURNAL)).await?;
-    // API overrides affect new sessions only. A manual switch must also move
-    // existing client connections, so use the same native restart as the toolbar.
-    let restart_core = !measured;
-    let result = if restart_core {
-        match restart(state).await {
-            Ok(()) => wait_ready(&installed).await,
-            Err(error) => Err(error),
-        }
-    } else {
-        api_override(&installed.api_address, id).await
-    };
-    if let Err(error) = result {
-        return Err(restore_after_failure(state, &changes, Some(&previous), restart_core, error).await);
-    }
-    {
-        let mut runtime = RUNTIME.lock().await;
-        runtime.installed = Some(installed);
-        runtime.failures = 0;
-        runtime.error = None;
-        runtime.ready = true;
-        runtime.last_switch = Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-    }
-    finish_journal(Path::new(JOURNAL)).await
+    let mut settings = previous.settings.clone();
+    settings.selected_id = id.into();
+    apply_selection(state, settings, Some(&previous), measured).await
 }
 
 fn same_settings(a: &Settings, b: &Settings) -> bool {
@@ -899,7 +759,7 @@ async fn check(state: &AppState) -> Result<(), String> {
         .ok_or("Сначала сохраните серверы")?;
     ensure_managed(&installed).await?;
     // Probing can last the whole timeout: run it without blocking config edits and control actions.
-    let samples = probes(state, &installed.settings).await?;
+    let mut samples = probes(state, &installed.settings).await?;
     // Shared ping history: the Servers page shows the latest state of every server from one source.
     for sample in &samples {
         crate::healthchecker::record_ping_history(&sample.id, sample.latency_ms.unwrap_or(0), sample.error.clone())
@@ -916,6 +776,7 @@ async fn check(state: &AppState) -> Result<(), String> {
             // Settings changed while probing; the next run uses the fresh ones.
             return Ok(());
         }
+        average_samples(&mut samples, &mut runtime.history, installed.settings.latency_samples);
         let next = choose(&installed.settings, &samples, &mut runtime.failures);
         runtime.probes = samples;
         runtime.last_check = Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
@@ -1105,68 +966,27 @@ async fn routing_update(file: &str, content: &str) -> Result<Option<RoutingUpdat
     if path.parent() != Some(Path::new(XRAY_CONF_DIR)) || !has_config_ext(path) || !is_active().await {
         return Ok(None);
     }
-    if is_managed_file(path) || path > managed_path().as_path() {
-        guard_config_edit(file, Some(content)).await?;
-        return Ok(None);
-    }
-    let previous = installed_or_store()
-        .await?
-        .ok_or("Не удалось прочитать настройки пула")?;
+    let previous = installed_or_store().await?.ok_or("Настройки группы не найдены")?;
     ensure_managed(&previous).await?;
-    if !previous.originals.is_empty() {
-        return Err("Дождитесь завершения переноса конфигурации пула".into());
-    }
     let docs = documents().await?;
     let current = docs
         .iter()
         .find(|doc| doc.path == path)
         .ok_or("Файл конфигурации не найден")?;
-    let next_value = parse_object(content).ok_or("Неверный JSON/JSONC")?;
-    if current.value.get("routing").is_none() && next_value.get("routing").is_none() {
+    let next = parse_object(content).ok_or("Неверный JSON/JSONC")?;
+    if current.value.get("routing").is_none() && next.get("routing").is_none() {
         return Ok(None);
     }
-    let mut before = current.value.clone();
-    let mut after = next_value.clone();
-    before.as_object_mut().ok_or("Неверный конфиг")?.remove("routing");
-    after.as_object_mut().ok_or("Неверный конфиг")?.remove("routing");
-    if before != after {
-        return Err("При включённом пуле изменяйте маршруты отдельно от остальных разделов этого файла".into());
-    }
-    if next_value
-        .pointer("/routing/rules")
-        .and_then(Value::as_array)
-        .is_some_and(|rules| {
-            rules.iter().any(|rule| {
-                rule["outboundTag"].as_str().is_some_and(|tag| tag.starts_with(PREFIX))
-                    || rule["balancerTag"] == BALANCER
-            })
-        })
-    {
-        return Err(
-            "В исходных маршрутах выбирайте обычное подключение; служебные теги пула добавляются автоматически".into(),
-        );
-    }
-    let mut changes = vec![FileChange {
+    guard_config_edit(file, Some(content)).await?;
+    let changes = vec![FileChange {
         path: path.to_path_buf(),
         before: Some(current.text.clone()),
         after: Some(content.into()),
     }];
-    let sources: Vec<_> = proposed_documents(&docs, &changes)?
-        .into_iter()
-        .filter(|doc| !is_managed_file(&doc.path))
-        .collect();
-    let (value, _, api_address) = prepare_pool(&previous.settings, &sources, true)?;
-    let installed = Installed {
-        managed: pretty(&value)?,
-        api_address,
-        ..previous.clone()
-    };
-    changes.push(disk_change(managed_path(), Some(installed.managed.clone())).await?);
-    changes.push(disk_change(PathBuf::from(STORE), Some(pretty(&installed)?)).await?);
     let proposed = proposed_documents(&docs, &changes)?;
     Ok(Some(RoutingUpdate {
+        installed: previous.clone(),
         previous,
-        installed,
         changes,
         proposed,
     }))
@@ -1236,49 +1056,53 @@ pub(crate) async fn update_routing_config(
 // Restore user files taken by older releases, then replace the old managed file
 // in the same recoverable transaction. A missing pool file is rebuilt from store.
 async fn migrate_pool(state: &AppState, old: Installed) -> Result<Installed, String> {
-    let current = read_optional(&managed_path()).await?;
-    let legacy = read_optional(&legacy_managed_path()).await?;
-    if current.is_some() && legacy.is_none() && old.originals.is_empty() {
+    if old.config_switching {
+        ensure_managed(&old).await?;
         return Ok(old);
     }
-    if current.as_ref().is_some_and(|text| text != &old.managed)
-        || legacy.as_ref().is_some_and(|text| text != &old.managed)
-    {
-        return Err("Файл пула изменён извне; автоматический перенос остановлен, исходные файлы сохранены".into());
+    for path in [managed_path(), legacy_managed_path()] {
+        if read_optional(&path).await?.is_some_and(|text| text != old.managed) {
+            return Err("Старый конфиг пула изменён извне; перенос остановлен".into());
+        }
     }
     let docs = documents().await?;
     let mut changes = restore_file_changes(Some(&old)).await?;
     let restored = proposed_documents(&docs, &changes)?;
-    let (value, originals, api_address) = prepare(&old.settings, &restored)?;
-    let installed = Installed {
-        selected_since: old.selected_since,
-        settings: old.settings.clone(),
-        managed: pretty(&value)?,
-        originals,
-        api_address,
-    };
-    for (path, after) in [
-        (managed_path(), Some(installed.managed.clone())),
-        (PathBuf::from(STORE), Some(pretty(&installed)?)),
-    ] {
-        if let Some(change) = changes.iter_mut().find(|change| change.path == path) {
-            change.after = after;
-        } else {
-            changes.push(disk_change(path, after).await?);
-        }
+    let server = old
+        .settings
+        .servers
+        .iter()
+        .find(|s| s.id == old.settings.selected_id)
+        .ok_or("Активный сервер не найден")?;
+    let replacement = activation_change(&restored, &old.settings.target_tag, server)?;
+    if let Some(change) = changes.iter_mut().find(|c| c.path == replacement.path) {
+        change.after = replacement.after;
+    } else {
+        changes.push(replacement);
     }
-    changes.retain(|change| change.before != change.after);
+    let installed = Installed {
+        settings: old.settings.clone(),
+        selected_since: old.selected_since,
+        config_switching: true,
+        managed: String::new(),
+        api_address: String::new(),
+        originals: vec![],
+    };
+    if let Some(change) = changes.iter_mut().find(|c| c.path == Path::new(STORE)) {
+        change.after = Some(pretty(&installed)?);
+    }
+    changes.retain(|c| c.before != c.after);
     validate_documents(&proposed_documents(&docs, &changes)?).await?;
     commit_files(&changes, Path::new(JOURNAL)).await?;
-    let was_running = core_is_xray(state)? && !controller::get_pid("xray").is_empty();
-    if was_running {
-        let result = match restart(state).await {
-            Ok(()) => wait_ready(&installed).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
-            return Err(restore_after_failure(state, &changes, Some(&old), true, error).await);
+    let was_running = core_is_xray(state)? && !main_pids().is_empty();
+    if was_running
+        && let Err(error) = async {
+            restart(state).await?;
+            wait_ready(&installed).await
         }
+        .await
+    {
+        return Err(restore_after_failure(state, &changes, Some(&old), true, error).await);
     }
     finish_journal(Path::new(JOURNAL)).await?;
     Ok(installed)
@@ -1408,7 +1232,12 @@ async fn disable(state: &AppState) -> Result<(), String> {
     }
     let was_running = core_is_xray(state)? && !controller::get_pid("xray").is_empty();
     let changes = restore_files(installed.as_ref()).await?;
-    if was_running && (!changes.is_empty() || recovered) {
+    if was_running
+        && (changes
+            .iter()
+            .any(|c| c.path.parent() == Some(Path::new(XRAY_CONF_DIR)))
+            || recovered)
+    {
         let started = match restart(state).await {
             Ok(()) => {
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1447,19 +1276,33 @@ pub(crate) async fn guard_config_edit(file: &str, content: Option<&str>) -> Resu
     if path.parent() != Some(Path::new(XRAY_CONF_DIR)) || !has_config_ext(path) || !is_active().await {
         return Ok(());
     }
-    let managed = managed_path();
     if is_managed_file(path) {
-        return Err(format!("{MANAGED_NAME} управляется окном «Серверы Xray»"));
+        return Err("Старый файл пула должен быть перенесён при запуске панели".into());
     }
-    if path > managed.as_path() {
-        return Err(format!(
-            "Имя файла должно идти раньше {MANAGED_NAME}, иначе файл перекроет пул серверов"
-        ));
+    let Some(installed) = installed_or_store().await? else {
+        return Ok(());
+    };
+    if !installed.config_switching {
+        return Err("Дождитесь переноса старого пула".into());
     }
-    if let Some(key) = content.and_then(parse_object).as_ref().and_then(owned_key) {
-        return Err(format!(
-            "Раздел {key} сейчас управляется окном «Серверы Xray». Отключите управление, чтобы редактировать его здесь"
-        ));
+    let docs = documents().await?;
+    let changes = [FileChange {
+        path: path.into(),
+        before: None,
+        after: content.map(str::to_owned),
+    }];
+    let proposed = proposed_documents(&docs, &changes)?;
+    let expected = installed
+        .settings
+        .servers
+        .iter()
+        .find(|s| s.id == installed.settings.selected_id)
+        .ok_or("Активный сервер не найден")?;
+    let active = merged_outbounds(&proposed)
+        .into_iter()
+        .find(|o| o["tag"] == installed.settings.target_tag);
+    if active.as_ref().is_none_or(|o| !same_outbound(o, &expected.outbound)) {
+        return Err("Файл содержит активный outbound группы. Меняйте сервер в разделе «Серверы» либо сначала отключите управление".into());
     }
     Ok(())
 }
@@ -1581,6 +1424,23 @@ pub async fn delete_library_server(Json(request): Json<SelectRequest>) -> Json<V
     )
 }
 
+/// The selected pool server, or the effective standalone proxy; never a direct outbound.
+pub(crate) async fn guard_outbound() -> Result<(String, Value), String> {
+    let installed = RUNTIME.lock().await.installed.clone();
+    if let Some(installed) = installed {
+        ensure_managed(&installed).await?;
+        let server = installed
+            .settings
+            .servers
+            .iter()
+            .find(|s| s.id == installed.settings.selected_id)
+            .ok_or("Активный сервер не найден")?;
+        return Ok((server.name.clone(), server.outbound.clone()));
+    }
+    let outbound = current_outbound(&documents().await?).ok_or("VPN outbound не найден")?;
+    Ok((outbound["tag"].as_str().unwrap_or("VPN").to_string(), outbound))
+}
+
 pub async fn get_candidates() -> Json<Value> {
     match documents().await {
         Ok(docs) => {
@@ -1644,13 +1504,13 @@ pub async fn put_servers(State(state): State<AppState>, Json(request): Json<PutS
                 .installed
                 .as_ref()
                 .map(|i| i.settings.selected_id.clone());
-            save(&state, settings).await?;
-            // An existing pool keeps its selection on save (a stale draft must not undo failover);
-            // an explicit new choice is applied right after, probed like a manual selection.
-            match explicit_selection(&requested, base_selected_id.as_deref(), previous.as_deref()) {
-                Some(id) => select(&state, &id, false).await,
-                None => Ok(()),
+            let mut settings = settings;
+            if let Some(current) = previous.as_deref()
+                && explicit_selection(&requested, base_selected_id.as_deref(), Some(current)).is_none()
+            {
+                settings.selected_id = current.into();
             }
+            save(&state, settings).await
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string())),
@@ -1715,24 +1575,16 @@ pub async fn start(state: AppState) {
         drop(guard);
         loop {
             let installed = RUNTIME.lock().await.installed.clone();
-            let delay = installed
-                .as_ref()
-                .filter(|i| i.settings.auto)
-                .map_or(10_000, |i| i.settings.check_interval_ms());
+            let delay = installed.as_ref().map_or(10_000, |i| i.settings.check_interval_ms());
             if let Some(installed) = installed {
                 if require_xray(&state).is_ok() {
-                    // Manual mode needs no API calls: the selection is pinned in the config on disk.
-                    let result = if installed.settings.auto {
-                        check(&state).await
-                    } else {
-                        ensure_managed(&installed).await
-                    };
+                    let result = check(&state).await;
                     let mut runtime = RUNTIME.lock().await;
                     // Skip stale results when settings changed meanwhile.
                     if runtime
                         .installed
                         .as_ref()
-                        .is_some_and(|c| c.managed == installed.managed)
+                        .is_some_and(|c| same_settings(&c.settings, &installed.settings))
                     {
                         match result {
                             Err(error) => {
@@ -1808,6 +1660,8 @@ mod tests {
         Probe {
             id: server(index).id,
             latency_ms,
+            average_ms: None,
+            checks: 0,
             error: None,
         }
     }
@@ -1917,6 +1771,45 @@ mod tests {
     }
 
     #[test]
+    fn fastest_uses_configurable_rolling_average_and_keeps_current_on_a_tie() {
+        let mut cfg = settings();
+        cfg.prefer_fastest = true;
+        cfg.latency_samples = 3;
+        let mut history = HashMap::new();
+        let mut failures = 0;
+        for (a, b) in [(100, 10), (100, 10), (1, 100)] {
+            let mut probes = vec![sample(1, Some(a)), sample(2, Some(b))];
+            average_samples(&mut probes, &mut history, cfg.latency_samples);
+            assert_eq!(choose(&cfg, &probes, &mut failures), Some(server(2).id));
+        }
+        let mut probes = vec![sample(1, Some(1)), sample(2, Some(100))];
+        average_samples(&mut probes, &mut history, 3);
+        assert_eq!(probes[0].average_ms, Some(34));
+        assert_eq!(probes[0].checks, 3);
+        assert_eq!(choose(&cfg, &probes, &mut failures), None);
+        let mut tied = vec![sample(1, Some(10)), sample(2, Some(10))];
+        average_samples(&mut tied, &mut HashMap::new(), 1);
+        assert_eq!(choose(&cfg, &tied, &mut failures), None);
+        cfg.latency_samples = 0;
+        assert!(validate_settings(&cfg).is_err());
+        cfg.latency_samples = 61;
+        assert!(validate_settings(&cfg).is_err());
+    }
+
+    #[test]
+    fn failed_checks_are_not_zero_latency_and_unavailable_servers_are_never_selected() {
+        let mut history = HashMap::new();
+        let mut probes = vec![sample(1, Some(10)), sample(2, Some(50))];
+        average_samples(&mut probes, &mut history, 2);
+        probes = vec![sample(1, None), sample(2, Some(50))];
+        average_samples(&mut probes, &mut history, 2);
+        assert_eq!(probes[0].average_ms, Some(10));
+        let mut cfg = settings();
+        cfg.failure_threshold = 1;
+        assert_eq!(choose(&cfg, &probes, &mut 0), Some(server(2).id));
+    }
+
+    #[test]
     fn manual_mode_never_fails_over() {
         let mut settings = settings();
         settings.auto = false;
@@ -1943,29 +1836,7 @@ mod tests {
         settings.probe_url = "file:///etc/passwd".into();
         assert!(validate_settings(&settings).is_err());
     }
-    #[test]
-    fn preserves_effective_routing_api_and_default_outbound() {
-        let docs = vec![
-            document("01.json", json!({"outbounds":[{"tag":"direct", "protocol":"freedom"}]})),
-            document(
-                "02.json",
-                json!({"outbounds":[{"tag":"proxy", "protocol":"socks"}], "routing":{"domainStrategy":"IPIfNonMatch", "rules":[{"outboundTag":"direct", "domain":["local"]}, {"outboundTag":"proxy", "domain":["example.com"]}], "balancers":[{"tag":"other", "selector":["direct"]}]}, "api":{"tag":"existing", "listen":"127.0.0.1:8080", "services":["StatsService"]}}),
-            ),
-        ];
-        let (value, originals, address) = prepare(&settings(), &docs).unwrap();
-        assert_eq!(address, "127.0.0.1:8080");
-        assert_eq!(value["api"]["services"], json!(["StatsService", "RoutingService"]));
-        assert_eq!(value["routing"]["domainStrategy"], "IPIfNonMatch");
-        assert_eq!(value["routing"]["rules"][0]["outboundTag"], "direct");
-        assert_eq!(value["routing"]["rules"][1]["balancerTag"], BALANCER);
-        assert_eq!(value["routing"]["rules"][2]["network"], "tcp,udp");
-        assert_eq!(value["routing"]["balancers"][0]["tag"], "other");
-        assert_eq!(
-            value["routing"]["balancers"][1]["selector"],
-            json!([alias(&settings().selected_id)])
-        );
-        assert!(originals.is_empty(), "pool must not rewrite user routing/api files");
-    }
+
     #[test]
     fn follows_xray_prepend_replace_and_tail_merge_order() {
         let docs = vec![
@@ -1983,22 +1854,7 @@ mod tests {
         );
         assert_eq!(result[1]["protocol"], "vless");
     }
-    #[test]
-    fn rejects_routing_scripts_external_api_and_unused_target() {
-        let mut doc = document(
-            "01.json",
-            json!({"outbounds":[{"tag":"proxy", "protocol":"socks"}], "routing":{"script":"custom.lua"}}),
-        );
-        assert!(prepare(&settings(), &[doc.clone()]).is_err());
-        doc.value["routing"] = json!({});
-        doc.value["api"] = json!({"listen":"0.0.0.0:10085", "services":[]});
-        assert!(prepare(&settings(), &[doc]).is_err());
-        let doc = document(
-            "01.json",
-            json!({"outbounds":[{"tag":"direct", "protocol":"freedom"}, {"tag":"proxy", "protocol":"socks"}]}),
-        );
-        assert!(prepare(&settings(), &[doc]).is_err());
-    }
+
     #[tokio::test]
     async fn transaction_rolls_back_and_does_not_clobber_external_edits() {
         let dir = std::env::temp_dir().join(format!("xkeen-test-{}", uuid::Uuid::new_v4()));
@@ -2207,16 +2063,7 @@ mod tests {
         settings.servers[0].name = "я".repeat(101);
         assert!(validate_settings(&settings).is_err());
     }
-    #[test]
-    fn layout_rejects_overrides_of_the_pool() {
-        let managed = document(MANAGED_NAME, json!({"routing": {}, "api": {}}));
-        let plain = document("04_outbounds.json", json!({"outbounds": []}));
-        assert!(check_layout(&[plain.clone(), managed.clone()]).is_ok());
-        let routing = document("05_routing.json", json!({"routing": {"rules": []}}));
-        assert!(check_layout(&[routing, managed.clone()]).is_ok());
-        let after = document("zzz.json", json!({"routing": {"rules": []}}));
-        assert!(check_layout(&[plain, managed, after]).is_err());
-    }
+
     #[test]
     fn restore_keeps_manual_edits_and_returns_taken_sections() {
         let original = FileChange {

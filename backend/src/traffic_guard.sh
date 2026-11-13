@@ -9,12 +9,34 @@
 # XKeen остановлен, ядро упало или роутер ещё загружается.
 #
 # Метка политики, порты и исключения берутся из хука XKeen (proxy.sh).
-# Аргумент «remove» снимает правила.
+# Строгий режим дополнительно блокирует INPUT/FORWARD на всех портах при отсутствии
+# свежей успешной проверки VPN. Аргумент «remove» снимает оба вида правил.
 
 chain="xkeen_ui_guard"
 # Новые правила собираются здесь и заменяют действующие, только когда добавлены все.
 staging="${chain}_new"
 xkeen_hook="${XKEEN_HOOK:-/opt/etc/ndm/netfilter.d/proxy.sh}"
+guard_hook="${GUARD_HOOK:-/opt/etc/ndm/netfilter.d/90-xkeen-ui-guard.sh}"
+guard_config="${GUARD_CONFIG:-/opt/etc/xkeen/traffic-guard.json}"
+health_file="${GUARD_HEALTH:-/tmp/xkeen-ui-guard-health}"
+strict_chain="xkeen_ui_lock"
+strict_gate="xkeen_ui_gate"
+
+is_strict() {
+    [ -f "$guard_config" ] || return 1
+    # An invalid config must not silently turn off strict protection.
+    [ "$(sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$guard_config" 2>/dev/null | head -n 1)" != "proxy" ]
+}
+
+# Only the daemon's fresh successful VPN probe may open the gate. /tmp is reset at boot.
+health_target() {
+    [ -r "$health_file" ] || { echo DROP; return; }
+    read -r health_pid health_until < "$health_file" 2>/dev/null || { echo DROP; return; }
+    case "$health_pid:$health_until" in *[!0-9:]* | :* | *:) echo DROP; return ;; esac
+    read -r uptime rest < "${GUARD_UPTIME:-/proc/uptime}"
+    uptime="${uptime%%.*}"
+    if kill -0 "$health_pid" 2>/dev/null && [ "$uptime" -lt "$health_until" ]; then echo RETURN; else echo DROP; fi
+}
 
 # XKeen пишет значения и в кавычках (port_donor="80,443"), и без них
 # (ip6tables_supported=false).
@@ -35,11 +57,12 @@ read_excludes() {
 
 # Снимает переходы из FORWARD в цепочку и удаляет её.
 drop_chain() {
-    family="$1"
-    name="$2"
-    "$family" -w -S FORWARD 2>/dev/null | grep -- "-j $name\$" | sed 's/^-A /-D /' | while read -r rule; do
-        # shellcheck disable=SC2086
-        "$family" -w $rule >/dev/null 2>&1
+    local family="$1" name="$2" parent
+    for parent in FORWARD INPUT; do
+        "$family" -w -S "$parent" 2>/dev/null | grep -- "-j $name\$" | sed 's/^-A /-D /' | while read -r rule; do
+            # shellcheck disable=SC2086
+            "$family" -w $rule >/dev/null 2>&1
+        done
     done
     "$family" -w -F "$name" >/dev/null 2>&1
     "$family" -w -X "$name" >/dev/null 2>&1
@@ -50,6 +73,7 @@ remove_family() {
     command -v "$1" >/dev/null 2>&1 || return 0
     drop_chain "$1" "$chain"
     drop_chain "$1" "$staging"
+    remove_strict "$1"
 }
 
 # Добавляет правила для набора портов кусками: multiport принимает до 15 значений.
@@ -132,6 +156,93 @@ apply_family() {
     "$family" -w -E "$staging" "$chain"
 }
 
+# Strict protection covers both forwarded traffic and traffic intercepted by a local
+# transparent proxy. Original destination checks preserve LAN access after REDIRECT/DNAT.
+# Do not copy proxy.sh's public exclusions or port limits: those are Internet too.
+remove_strict() {
+    drop_chain "$1" "$strict_chain"
+    drop_chain "$1" "${strict_chain}_new"
+    "$1" -w -F "$strict_gate" >/dev/null 2>&1
+    "$1" -w -X "$strict_gate" >/dev/null 2>&1
+    return 0
+}
+
+sync_gate() {
+    family="$1"
+    command -v "$family" >/dev/null 2>&1 || return 1
+    "$family" -w -C "$strict_gate" -j "$health_action" 2>/dev/null && return 0
+    "$family" -w -R "$strict_gate" 1 -j "$health_action"
+}
+
+apply_strict() {
+    local family="$1" name net local_nets parent
+    # If IPv6 exists it must also be protected, even when XKeen does not proxy IPv6.
+    command -v "$family" >/dev/null 2>&1 || {
+        [ "$family" = "ip6tables" ] && [ ! -s /proc/net/if_inet6 ] && return 0
+        return 1
+    }
+    if ! "$family" -w -S "$strict_gate" >/dev/null 2>&1; then
+        "$family" -w -N "$strict_gate" || return 1
+        "$family" -w -A "$strict_gate" -j DROP || return 1
+    fi
+    name="${strict_chain}_new"
+    drop_chain "$family" "$name"
+    "$family" -w -N "$name" || return 1
+    "$family" -w -A "$name" -m conntrack --ctdir REPLY -j RETURN || return 1
+    if [ "$family" = "ip6tables" ]; then
+        # Neighbor discovery is untracked; original-destination matches alone would
+        # break IPv6 LAN access while the gate is closed. TCP/UDP REDIRECT still
+        # uses the original destination checks below.
+        for net in fe80::/10 fc00::/7 ff02::/16; do
+            "$family" -w -A "$name" -p ipv6-icmp -d "$net" -j RETURN || return 1
+        done
+        "$family" -w -A "$name" -p udp -d ff02::/16 --sport 546 --dport 547 -j RETURN || return 1
+        local_nets="::1/128 fe80::/10 fc00::/7 ff00::/8"
+    else
+        "$family" -w -A "$name" -p udp -d 255.255.255.255/32 --sport 68 --dport 67 -j RETURN || return 1
+        local_nets="0.0.0.0/8 10.0.0.0/8 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 255.255.255.255/32"
+    fi
+    for net in $local_nets; do
+        "$family" -w -A "$name" -m conntrack --ctorigdst "$net" -j RETURN || return 1
+    done
+    "$family" -w -A "$name" -j "$strict_gate" || return 1
+    for parent in INPUT FORWARD; do
+        # A TPROXY packet's fwmark may have been replaced; keep matching its connection mark.
+        "$family" -w -I "$parent" 1 -m connmark --mark "$policy_mark" -j "$name" || return 1
+        "$family" -w -I "$parent" 1 -m mark --mark "$policy_mark" -j "$name" || return 1
+    done
+    drop_chain "$family" "$strict_chain"
+    "$family" -w -E "$name" "$strict_chain" || return 1
+    sync_gate "$family"
+}
+
+# A tiny shell watchdog outlives the daemon. If it exits or gets stuck, a previously
+# successful probe expires and closes the gate without any browser/firewall event.
+if [ "$1" = "watch" ]; then
+    unset type table
+    watch_lock="${GUARD_WATCH_LOCK:-/tmp/xkeen-ui-guard-watch.lock}"
+    if ! mkdir "$watch_lock" 2>/dev/null; then
+        watch_wait=0
+        watch_pid="$(cat "$watch_lock/pid" 2>/dev/null)"
+        while [ -z "$watch_pid" ] && [ "$watch_wait" -lt 10 ]; do
+            sleep 1
+            watch_wait=$((watch_wait + 1))
+            watch_pid="$(cat "$watch_lock/pid" 2>/dev/null)"
+        done
+        [ -n "$watch_pid" ] && kill -0 "$watch_pid" 2>/dev/null && exit 0
+        rm -rf "$watch_lock"
+        mkdir "$watch_lock" 2>/dev/null || exit 0
+    fi
+    echo $$ > "$watch_lock/pid"
+    trap 'rm -rf "$watch_lock"' EXIT
+    trap 'exit 0' INT TERM
+    while [ -f "$guard_hook" ] && is_strict; do
+        sh "$guard_hook" tick
+        sleep 2
+    done
+    exit 0
+fi
+
 # Keenetic вызывает хук на каждое событие firewall, панель — при включении: запуски
 # не должны пересекаться, иначе один снимет правила, которые ставит другой.
 lock="${GUARD_LOCK:-/tmp/xkeen-ui-guard.lock}"
@@ -182,9 +293,12 @@ fi
 
 # Keenetic вызывает хук для каждой таблицы; нужна только filter.
 [ -n "$table" ] && [ "$table" != "filter" ] && exit 0
-[ -f "$xkeen_hook" ] || exit 0
+[ -f "$xkeen_hook" ] || is_strict || exit 0
 
 policy_mark="$(read_var policy_mark)"
+if [ -z "$policy_mark" ] && is_strict; then
+    policy_mark="$(sed -n 's/.*"policy_mark"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$guard_config" 2>/dev/null | head -n 1)"
+fi
 # Без политики XKeen перехватывает всех клиентов, а это правило — только для политики.
 [ -n "$policy_mark" ] || exit 0
 
@@ -194,7 +308,26 @@ if [ -n "$port_donor" ] && [ -n "$(read_var file_dns)" ]; then
     port_donor="$(read_var port_dns),$port_donor"
 fi
 
+health_action="$(health_target)"
+if [ "$1" = "tick" ]; then
+    # A watchdog already queued on the lock must not reinstall rules after Disable.
+    [ -f "$guard_hook" ] || exit 0
+    if is_strict; then
+        # No repeated rule rebuilds in the steady state.
+        for family in iptables ip6tables; do
+            if ! "$family" -w -C INPUT -m connmark --mark "$policy_mark" -j "$strict_chain" >/dev/null 2>&1 ||
+               ! "$family" -w -C FORWARD -m connmark --mark "$policy_mark" -j "$strict_chain" >/dev/null 2>&1; then
+                apply_strict "$family" || exit 1
+            else
+                sync_gate "$family" || exit 1
+            fi
+        done
+    fi
+    exit 0
+fi
+
 status=0
+if [ -f "$xkeen_hook" ]; then
 case "$type" in
     iptables | ip6tables) apply_family "$type" || status=1 ;;
     *)
@@ -202,4 +335,16 @@ case "$type" in
         apply_family ip6tables || status=1
         ;;
 esac
+fi
+if is_strict; then
+    for family in iptables ip6tables; do
+        apply_strict "$family" || status=1
+    done
+    if [ "${GUARD_NO_WATCH:-0}" != "1" ]; then
+        sh "$guard_hook" watch </dev/null >/dev/null 2>&1 &
+    fi
+else
+    remove_strict iptables
+    command -v ip6tables >/dev/null 2>&1 && remove_strict ip6tables
+fi
 exit $status

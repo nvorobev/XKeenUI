@@ -250,14 +250,21 @@ function OptionSelect({
   value,
   options,
   onValueChange,
+  disabled = false,
 }: {
   id: string
   value: string
   options: { value: string; label: string }[]
   onValueChange: (value: string) => void
+  disabled?: boolean
 }) {
   return (
-    <Select value={value} items={Object.fromEntries(options.map((o) => [o.value, o.label]))} onValueChange={onValueChange}>
+    <Select
+      disabled={disabled}
+      value={value}
+      items={Object.fromEntries(options.map((o) => [o.value, o.label]))}
+      onValueChange={onValueChange}
+    >
       <SelectTrigger id={id} className="w-full">
         <SelectValue />
       </SelectTrigger>
@@ -903,6 +910,11 @@ type TrafficGuardStatus = {
   supported: boolean
   reason: string | null
   ports: string | null
+  mode: 'proxy' | 'strict'
+  target: string
+  core?: string
+  targets?: string[]
+  health?: { blocked: boolean; vpn: string | null; error: string | null }
 }
 
 function TrafficGuardHelp({ ports }: { ports: string }) {
@@ -936,35 +948,49 @@ function TrafficGuardHelp({ ports }: { ports: string }) {
 
 function TrafficGuardField({ showToast }: { showToast: (msg: string, type?: 'success' | 'error') => void }) {
   const [status, setStatus] = useState<TrafficGuardStatus | null>(null)
+  const requestId = useRef(0)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    apiCall<TrafficGuardStatus>('GET', 'traffic-guard')
-      .then((result) => {
-        if (cancelled) return
-        if (result.success) setStatus(result)
-        else setLoadError(result.error ?? 'Не удалось получить состояние')
-      })
-      .catch((e: Error) => {
-        if (!cancelled) setLoadError(e.message)
-      })
+    const load = () => {
+      const id = ++requestId.current
+      return apiCall<TrafficGuardStatus>('GET', 'traffic-guard')
+        .then((result) => {
+          if (cancelled || id !== requestId.current) return
+          if (result.success) {
+            setStatus(result)
+            setLoadError(result.error ?? null)
+          } else setLoadError(result.error ?? 'Не удалось получить состояние')
+        })
+        .catch((e: Error) => {
+          if (!cancelled && id === requestId.current) setLoadError(e.message)
+        })
+    }
+    void load()
+    const interval = setInterval(() => {
+      if (!document.hidden) void load()
+    }, 5000)
     return () => {
       cancelled = true
+      clearInterval(interval)
     }
   }, [])
 
   const toggle = useCallback(
-    async (enabled: boolean) => {
+    async (enabled: boolean, mode = status?.mode ?? 'proxy', target = status?.target ?? '') => {
       setPending(true)
+      ++requestId.current
       try {
-        const result = await apiCall<TrafficGuardStatus>('PUT', 'traffic-guard', { enabled }, { timeoutMs: 30000 })
+        const result = await apiCall<TrafficGuardStatus>('PUT', 'traffic-guard', { enabled, mode, target }, { timeoutMs: 30000 })
         if (!result.success) {
           showToast('Ошибка: ' + result.error, 'error')
           return
         }
+        ++requestId.current
         setStatus(result)
+        setLoadError(null)
         showToast(enabled ? 'Блокировка трафика мимо прокси включена' : 'Блокировка трафика мимо прокси выключена', 'success')
       } catch (e) {
         showToast((e as Error).message, 'error')
@@ -972,7 +998,7 @@ function TrafficGuardField({ showToast }: { showToast: (msg: string, type?: 'suc
         setPending(false)
       }
     },
-    [showToast]
+    [showToast, status?.mode, status?.target]
   )
 
   const ports = status?.ports ?? '80, 443'
@@ -980,9 +1006,7 @@ function TrafficGuardField({ showToast }: { showToast: (msg: string, type?: 'suc
   if (loadError) state = <FieldError>{loadError}</FieldError>
   else if (status && !status.supported && status.reason) state = <WarningAlert>{status.reason}</WarningAlert>
   else if (status?.enabled && !status.active)
-    state = (
-      <WarningAlert>Хук установлен, но правила сейчас не активны. Они применятся при следующей перестройке firewall роутера.</WarningAlert>
-    )
+    state = <WarningAlert>Хук установлен, но действие правил не подтверждено. Защиту нельзя считать работающей.</WarningAlert>
 
   return (
     <SettingsGroup>
@@ -990,16 +1014,73 @@ function TrafficGuardField({ showToast }: { showToast: (msg: string, type?: 'suc
         label="Блокировать трафик мимо прокси"
         labelAddon={<TrafficGuardHelp ports={ports} />}
         htmlFor="traffic-guard"
-        description={`Если XKeen не работает, устройства из его политики не выйдут в интернет напрямую на портах ${ports}`}
+        description={
+          status?.mode === 'strict'
+            ? 'Блокировать весь интернет устройств политики XKeen, когда VPN недоступен'
+            : `Если XKeen не работает, устройства из его политики не выйдут в интернет напрямую на портах ${ports}`
+        }
       >
         <Switch
           id="traffic-guard"
           checked={status?.enabled ?? false}
           disabled={pending || !status || (!status.supported && !status.enabled)}
-          onCheckedChange={toggle}
+          onCheckedChange={(enabled) => void toggle(enabled)}
           aria-label="Блокировать трафик мимо прокси"
         />
       </SettingRow>
+      <SettingRow
+        label="Режим защиты"
+        htmlFor="traffic-guard-mode"
+        description={
+          status?.mode === 'strict'
+            ? 'При недоступном VPN блокируется весь интернет устройств политики XKeen, включая direct и любые порты. Локальная сеть и панель доступны. Проверка каждые 5 секунд; блокировка включается после неуспешной проверки, снимается после успешной.'
+            : 'Блокирует обход перехвата XKeen на проксируемых портах. Маршруты direct при работающем ядре доступны.'
+        }
+        layout="responsive"
+      >
+        <OptionSelect
+          id="traffic-guard-mode"
+          disabled={pending || !status}
+          value={status?.mode ?? 'proxy'}
+          options={[
+            { value: 'proxy', label: 'Защита от обхода' },
+            { value: 'strict', label: 'Весь интернет только при доступном VPN' },
+          ]}
+          onValueChange={(mode) => {
+            if (!pending && status) void toggle(status.enabled, mode as 'proxy' | 'strict')
+          }}
+        />
+      </SettingRow>
+      {status?.mode === 'strict' && status.core === 'mihomo' && (
+        <SettingRow
+          label="Проверяемый VPN"
+          htmlFor="traffic-guard-target"
+          description="Выберите сервер или группу. Прямой выход не считается работающим VPN."
+          layout="responsive"
+        >
+          <OptionSelect
+            id="traffic-guard-target"
+            disabled={pending}
+            value={status.target || '__none__'}
+            options={[
+              { value: '__none__', label: 'Выберите VPN' },
+              ...(status.targets ?? []).map((name) => ({ value: name, label: name })),
+            ]}
+            onValueChange={(target) => {
+              if (!pending) void toggle(status.enabled, 'strict', target === '__none__' ? '' : target)
+            }}
+          />
+        </SettingRow>
+      )}
+      {status?.enabled && status.mode === 'strict' && (
+        <div className="px-4 py-3.5">
+          <WarningAlert>
+            {status.health?.blocked !== false
+              ? `Интернет заблокирован: ${status.health?.error ?? 'ожидание проверки VPN'}`
+              : `VPN доступен: ${status.health.vpn}. Интернет разрешён.`}
+          </WarningAlert>
+        </div>
+      )}
       {state && <div className="px-4 py-3.5">{state}</div>}
     </SettingsGroup>
   )

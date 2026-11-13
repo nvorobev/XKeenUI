@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -7,8 +8,15 @@ import { IconChevronDown } from '@tabler/icons-react'
 import { useState } from 'react'
 import { checkIntervalSecs, type Settings } from './model'
 
-type NumberKey = 'interval_secs' | 'failure_threshold' | 'timeout_ms'
+type NumberKey = 'interval_secs' | 'failure_threshold' | 'timeout_ms' | 'latency_samples'
 const numberFields: { key: NumberKey; label: string; min: number; max: number; hint: string }[] = [
+  {
+    key: 'latency_samples',
+    label: 'Проверок для среднего пинга',
+    min: 1,
+    max: 60,
+    hint: 'Скользящее окно: от 1 до 60 последних проверок. Пока проверок меньше, используются имеющиеся результаты. Неудачные проверки не считаются нулевым пингом.',
+  },
   {
     key: 'interval_secs',
     label: 'Интервал проверки, с',
@@ -39,7 +47,7 @@ export function FailoverSettings({
 }) {
   const [open, setOpen] = useState(false)
   const summary = draft.auto
-    ? `каждые ${checkIntervalSecs(draft)} с · ${draft.failure_threshold} отказа · ${draft.timeout_ms} мс`
+    ? `каждые ${checkIntervalSecs(draft)} с · среднее за ${draft.latency_samples} проверок · ${draft.prefer_fastest ? 'самый быстрый' : 'только при отказе'}`
     : 'выключено — сервер меняется только вручную'
   return (
     <Collapsible open={open || !!error} onOpenChange={setOpen} className="rounded-xl border">
@@ -49,11 +57,11 @@ export function FailoverSettings({
           checked={draft.auto}
           disabled={disabled}
           onCheckedChange={(auto) => onChange({ ...draft, auto })}
-          aria-label="Автопереключение при отказе"
+          aria-label="Автоматическое переключение"
         />
         <div className="flex min-w-0 flex-1 flex-col">
           <label htmlFor="xray-auto" className="text-sm font-medium">
-            Автопереключение при отказе
+            Автоматическое переключение
           </label>
           <span className="text-muted-foreground text-xs">{summary}</span>
         </div>
@@ -72,10 +80,21 @@ export function FailoverSettings({
       <CollapsibleContent className="border-t p-3">
         <FieldGroup>
           <p className="text-muted-foreground text-sm">
-            Пока текущий сервер отвечает, он сохраняется, даже если другой быстрее. После подтверждённого отказа панель переключится на
-            самый быстрый доступный сервер из пула.
+            {draft.prefer_fastest
+              ? 'Панель выбирает доступный сервер с минимальным средним пингом, даже если текущий работает.'
+              : 'Пока текущий сервер отвечает, он сохраняется. При отказе выбирается доступный сервер с минимальным средним пингом.'}{' '}
+            При смене сервера заменяется исходный outbound и перезапускается XKeen; текущие соединения переподключатся.
           </p>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <Field orientation="horizontal">
+            <Checkbox
+              id="xray-prefer-fastest"
+              checked={draft.prefer_fastest}
+              disabled={disabled || !draft.auto}
+              onCheckedChange={(checked) => onChange({ ...draft, prefer_fastest: checked === true })}
+            />
+            <FieldLabel htmlFor="xray-prefer-fastest">Переключаться на самый быстрый</FieldLabel>
+          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
             {numberFields.map((field) => (
               <Field key={field.key}>
                 <FieldLabel htmlFor={`xray-${field.key}`}>{field.label}</FieldLabel>

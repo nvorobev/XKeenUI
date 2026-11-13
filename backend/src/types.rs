@@ -45,9 +45,61 @@ impl Default for XrayLogPaths {
 
 static XRAY_LOG_PATHS: LazyLock<RwLock<XrayLogPaths>> = LazyLock::new(|| RwLock::new(XrayLogPaths::default()));
 
+/// The directory Xray logs must live in: the journal reads and clears these files, so a path
+/// taken from a config must not point at anything else (the panel config, sessions, devices).
+const XRAY_LOG_ROOT: &str = "/opt/var/log";
+
+/// Whether `path` is a regular location inside `root`: absolute, no `..`, and, once symlinks are
+/// resolved for the parts that exist, still inside `root`.
+fn is_log_path_allowed(path: &str, root: &str) -> bool {
+    use std::path::{Component, Path};
+
+    let candidate = Path::new(path);
+    if !candidate.is_absolute()
+        || !candidate.starts_with(root)
+        || candidate.components().any(|c| matches!(c, Component::ParentDir))
+    {
+        return false;
+    }
+    // Resolve the deepest existing ancestor (the file itself may not exist yet).
+    let Ok(root_real) = std::fs::canonicalize(root) else {
+        return true;
+    };
+    let mut existing = candidate;
+    loop {
+        match std::fs::canonicalize(existing) {
+            Ok(real) => {
+                if !real.starts_with(&root_real) {
+                    return false;
+                }
+                // An existing file must be a regular file, not a device or directory.
+                return existing != candidate || real.is_file();
+            }
+            Err(_) => match existing.parent() {
+                Some(parent) => existing = parent,
+                None => return false,
+            },
+        }
+    }
+}
+
 fn normalize_xray_log_path(path: Option<&str>, fallback: &str) -> String {
+    normalize_xray_log_path_in(path, fallback, XRAY_LOG_ROOT)
+}
+
+fn normalize_xray_log_path_in(path: Option<&str>, fallback: &str, root: &str) -> String {
     path.map(str::trim)
         .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("none"))
+        .filter(|p| {
+            let allowed = is_log_path_allowed(p, root);
+            if !allowed {
+                crate::logger::log(
+                    "WARN",
+                    format!("Путь журнала Xray {p} вне {root}, используется {fallback}"),
+                );
+            }
+            allowed
+        })
         .unwrap_or(fallback)
         .to_string()
 }
@@ -551,4 +603,41 @@ pub struct UpdateReq {
 #[derive(Deserialize)]
 pub struct UpdateControlReq {
     pub action: String,
+}
+
+#[cfg(test)]
+mod log_path_tests {
+    use super::*;
+
+    #[test]
+    fn log_path_must_stay_in_log_root() {
+        let root = std::env::temp_dir().join(format!("xkeen-logs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("xray")).unwrap();
+        let root_str = root.to_str().unwrap();
+        let fallback = "/fallback.log";
+        let ok = format!("{root_str}/xray/access.log");
+        assert_eq!(normalize_xray_log_path_in(Some(&ok), fallback, root_str), ok);
+        let new_dir = format!("{root_str}/new/dir/a.log");
+        assert_eq!(normalize_xray_log_path_in(Some(&new_dir), fallback, root_str), new_dir);
+        for bad in [
+            "/opt/etc/xkeen/xkeen-ui.json".to_string(),
+            "/dev/zero".to_string(),
+            format!("{root_str}/../etc/passwd"),
+            "relative.log".to_string(),
+            format!("{root_str}/xray"),
+        ] {
+            assert_eq!(
+                normalize_xray_log_path_in(Some(&bad), fallback, root_str),
+                fallback,
+                "{bad}"
+            );
+        }
+        std::os::unix::fs::symlink("/etc", root.join("link")).unwrap();
+        let through_link = format!("{root_str}/link/hosts");
+        assert_eq!(
+            normalize_xray_log_path_in(Some(&through_link), fallback, root_str),
+            fallback
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

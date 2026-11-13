@@ -6,13 +6,15 @@ export type Settings = {
   servers: Server[]
   selected_id: string
   auto: boolean
+  prefer_fastest: boolean
+  latency_samples: number
   interval_secs: number
   interval_ms?: number
   failure_threshold: number
   probe_url: string
   timeout_ms: number
 }
-export type Probe = { id: string; latency_ms: number | null; error: string | null }
+export type Probe = { id: string; latency_ms: number | null; error: string | null; average_ms?: number | null; checks?: number }
 export type Snapshot = {
   success: boolean
   error: string | null
@@ -44,6 +46,8 @@ export const defaults: Settings = {
   servers: [],
   selected_id: '',
   auto: false,
+  prefer_fastest: false,
+  latency_samples: 5,
   interval_secs: 60,
   interval_ms: 60000,
   failure_threshold: 3,
@@ -55,6 +59,7 @@ export const defaults: Settings = {
 export function draftFromSnapshot(snapshot: Snapshot | null): Settings {
   if (!snapshot?.settings) return defaults
   return {
+    ...defaults,
     ...snapshot.settings,
     servers: snapshot.settings.servers.map((server) => snapshot.servers.find((s) => s.id === server.id) ?? server),
   }
@@ -104,6 +109,7 @@ export function checkIntervalSecs(settings: Settings): number {
 export function rangeError(settings: Settings): string {
   const inRange = (value: number, min: number, max: number) => Number.isInteger(value) && value >= min && value <= max
   if (!inRange(checkIntervalSecs(settings), 1, 3600)) return 'Интервал: целое число секунд от 1 до 3600'
+  if (!inRange(settings.latency_samples, 1, 60)) return 'Проверок для среднего пинга: целое число от 1 до 60'
   if (!inRange(settings.failure_threshold, 1, 10)) return 'Отказов подряд: целое число от 1 до 10'
   if (!inRange(settings.timeout_ms, 500, 30000)) return 'Таймаут: целое число от 500 до 30000 мс'
   return ''
@@ -121,8 +127,8 @@ export function draftStatus(server: Server, saved: Settings | null): DraftStatus
 /** Mirrors the backend: Xray restarts when the set of outbounds (or their order) changes. */
 export function needsRestart(draft: Settings, saved: Settings | null): boolean {
   if (!saved) return true
-  const pairs = (s: Settings) => s.servers.map((v) => [v.id, v.outbound])
-  return !same(pairs(draft), pairs(saved))
+  const active = (s: Settings) => s.servers.find((v) => v.id === s.selected_id)?.outbound
+  return draft.selected_id !== saved.selected_id || !same(active(draft), active(saved))
 }
 
 /** `failing` = the active server missed probes but has not reached the failover threshold yet. */
@@ -147,7 +153,7 @@ export function errorText(reason: unknown, fallback: string): string {
 }
 
 /** Latest known health of a row: background pool probe or ping history, whichever is newer. */
-export type Sample = { latency_ms: number | null; error: string | null; time: string | null }
+export type Sample = { latency_ms: number | null; error: string | null; time: string | null; average_ms?: number | null; checks?: number }
 
 export function latestSample(
   history: { time: string; delay: number; error?: string }[] | undefined,
@@ -155,8 +161,9 @@ export function latestSample(
   probeTime?: string | null
 ): Sample | undefined {
   const last = history?.[history.length - 1]
-  const fromHistory = last && { latency_ms: last.delay > 0 ? last.delay : null, error: last.error ?? null, time: last.time }
-  const fromProbe = probe && { latency_ms: probe.latency_ms, error: probe.error, time: probeTime ?? null }
+  const averaged = { average_ms: probe?.average_ms, checks: probe?.checks }
+  const fromHistory = last && { ...averaged, latency_ms: last.error ? null : last.delay, error: last.error ?? null, time: last.time }
+  const fromProbe = probe && { ...averaged, latency_ms: probe.latency_ms, error: probe.error, time: probeTime ?? null }
   if (fromHistory && fromProbe) return (fromProbe.time ?? '') > fromHistory.time ? fromProbe : fromHistory
   return fromHistory ?? fromProbe
 }
@@ -175,7 +182,9 @@ export function withHistory(snapshot: Snapshot, history: Record<string, { time: 
       snapshot.probes.find((p) => p.id === server.id),
       snapshot.last_check
     )
-    return sample ? [{ id: server.id, latency_ms: sample.latency_ms, error: sample.error }] : []
+    return sample
+      ? [{ id: server.id, latency_ms: sample.latency_ms, error: sample.error, average_ms: sample.average_ms, checks: sample.checks }]
+      : []
   })
   const times = servers.map((s) => history[s.id]?.at(-1)?.time ?? '').filter(Boolean)
   const lastCheck = [snapshot.last_check ?? '', ...times].sort().at(-1) || null

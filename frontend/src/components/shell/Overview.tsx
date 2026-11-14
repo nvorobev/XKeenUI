@@ -976,7 +976,7 @@ export function Overview({ isXray, onOpenModal }: { isXray: boolean; onOpenModal
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-1">
         <h1 className="text-xl font-bold tracking-wider uppercase">Обзор</h1>
-        <p className="text-muted-foreground text-sm">Подключение, трафик и устройства. Карточки можно перетаскивать за значок ⋮⋮.</p>
+        <p className="text-muted-foreground text-sm">Подключение, трафик и устройства.</p>
       </div>
       <Tiles isXray={isXray} snapshot={pool} overview={overview} guard={guard} />
       <div className="grid items-start gap-5 lg:grid-cols-2">

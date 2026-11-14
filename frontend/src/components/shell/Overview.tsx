@@ -5,10 +5,8 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Switch } from '@/components/ui/switch'
-import { IconActivityHeartbeat, IconGripVertical, IconRefresh } from '@tabler/icons-react'
-import { Reorder, useDragControls, type PanInfo } from 'framer-motion'
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { create } from 'zustand'
+import { IconActivityHeartbeat, IconRefresh } from '@tabler/icons-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { apiCall } from '../../lib/api'
 import { navigate } from '../../lib/navigation'
 import { fetchPingHistory, useAppActions, useAppContext, usePingHistoryStore } from '../../lib/store'
@@ -26,7 +24,10 @@ import {
   type Snapshot,
 } from '../configuration/xray/servers/model'
 import { StatusDot } from '../configuration/xray/servers/StatusBits'
+import { DeviceTrafficPanel } from './DeviceTrafficPanel'
+import { OverviewLayout, type CardId } from './OverviewLayout'
 import { InfoGrid, Panel } from './Panel'
+import { TRAFFIC_WINDOW_MS, usePolling, useRouterOverview, useTrafficStore, type RouterDevice, type RouterOverview } from './trafficHistory'
 
 type SystemStats = {
   success: boolean
@@ -38,88 +39,6 @@ type SystemStats = {
   model: string | null
   firmware: string | null
   core: { name: string; pid: number | null; rssBytes?: number | null; uptimeSecs?: number | null } | null
-}
-
-export type RouterDevice = {
-  mac: string
-  name: string
-  ip: string
-  active: boolean
-  registered: boolean
-  in_xkeen: boolean
-  rx_bytes: number
-  tx_bytes: number
-}
-
-export type RouterOverview = {
-  success: boolean
-  error?: string
-  policy: { name: string; description: string } | null
-  wan: { interface: string; rx_bps: number; tx_bps: number } | null
-  devices: RouterDevice[]
-}
-
-type TrafficSample = { t: number; xkeen: number; other: number }
-
-const TRAFFIC_WINDOW_MS = 10 * 60 * 1000
-
-type TrafficState = {
-  samples: TrafficSample[]
-  /** Download speed of each device, bits per second, from the last two polls. */
-  speeds: Record<string, number>
-  last: { t: number; bytes: Record<string, number> } | null
-  push: (overview: RouterOverview, now?: number) => void
-}
-
-/** Device download speeds from the router's byte counters; kept while the panel is open. */
-export const useTrafficStore = create<TrafficState>((set, get) => ({
-  samples: [],
-  speeds: {},
-  last: null,
-  push: (overview, now = Date.now()) => {
-    const bytes = Object.fromEntries(overview.devices.map((device) => [device.mac, device.rx_bytes]))
-    const last = get().last
-    if (!last) {
-      set({ last: { t: now, bytes } })
-      return
-    }
-    const seconds = (now - last.t) / 1000
-    if (seconds < 1) return
-    // After a long pause (another page, a sleeping tab) the delta is no current speed.
-    if (seconds > 60) {
-      set({ last: { t: now, bytes } })
-      return
-    }
-    const speeds: Record<string, number> = {}
-    let xkeen = 0
-    let other = 0
-    for (const device of overview.devices) {
-      const previous = last.bytes[device.mac]
-      // A new device or a reset counter has no measurable delta yet.
-      const delta = previous === undefined || device.rx_bytes < previous ? 0 : device.rx_bytes - previous
-      const bps = (delta * 8) / seconds
-      speeds[device.mac] = bps
-      if (device.in_xkeen) xkeen += bps
-      else other += bps
-    }
-    set((state) => ({
-      last: { t: now, bytes },
-      speeds,
-      samples: [...state.samples.filter((sample) => now - sample.t <= TRAFFIC_WINDOW_MS), { t: now, xkeen, other }],
-    }))
-  },
-}))
-
-/** Polls `load` every `ms` while the page is visible. */
-function usePolling(load: () => Promise<void>, ms: number, enabled = true) {
-  useEffect(() => {
-    if (!enabled) return
-    void load()
-    const timer = setInterval(() => {
-      if (!document.hidden) void load()
-    }, ms)
-    return () => clearInterval(timer)
-  }, [load, ms, enabled])
 }
 
 function formatDuration(seconds: number | null | undefined): string {
@@ -601,7 +520,7 @@ function DevicesPanel({
         <>
           {!overview.policy && (
             <p className="text-muted-foreground text-sm">
-              В Keenetic нет политики доступа с описанием «XKeen»: XKeen перехватывает трафик всех устройств.
+              Чтобы назначать политику устройствам, сначала создайте в Keenetic политику доступа с описанием «XKeen».
             </p>
           )}
           <ul className="-mx-5 divide-y border-y">
@@ -746,120 +665,15 @@ function JournalPanel({ handle }: CardProps) {
   )
 }
 
-/* ─── Layout: two columns of cards, reordered by dragging the handle ───────── */
-
-export type CardId = 'connection' | 'traffic' | 'devices' | 'router' | 'journal'
-export type CardLayout = { left: CardId[]; right: CardId[] }
-
-const CARD_IDS: CardId[] = ['connection', 'traffic', 'devices', 'router', 'journal']
-export const DEFAULT_LAYOUT: CardLayout = { left: ['connection', 'devices'], right: ['traffic', 'router', 'journal'] }
-const LAYOUT_KEY = 'xkeen-ui:overview-layout'
-
-/** Saved order, with unknown ids dropped and new cards appended. */
-export function normalizeLayout(value: unknown): CardLayout {
-  const saved = value as Partial<CardLayout> | null
-  if (!saved || !Array.isArray(saved.left) || !Array.isArray(saved.right)) return DEFAULT_LAYOUT
-  const seen = new Set<CardId>()
-  const keep = (ids: unknown[]) =>
-    ids.filter((id): id is CardId => CARD_IDS.includes(id as CardId) && !seen.has(id as CardId) && !!seen.add(id as CardId))
-  const left = keep(saved.left)
-  const right = keep(saved.right)
-  return { left, right: [...right, ...CARD_IDS.filter((id) => !seen.has(id))] }
-}
-
-function readLayout(): CardLayout {
-  try {
-    return normalizeLayout(JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null'))
-  } catch {
-    return DEFAULT_LAYOUT
-  }
-}
-
-function saveLayout(layout: CardLayout) {
-  try {
-    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout))
-  } catch {
-    /* the order then lasts until reload */
-  }
-}
-
-/** Moves a card one step: up/down within its column, left/right to the other column. */
-export function moveCard(layout: CardLayout, id: CardId, direction: 'up' | 'down' | 'left' | 'right'): CardLayout {
-  const from = layout.left.includes(id) ? 'left' : 'right'
-  const index = layout[from].indexOf(id)
-  if (direction === 'up' || direction === 'down') {
-    const target = index + (direction === 'up' ? -1 : 1)
-    if (target < 0 || target >= layout[from].length) return layout
-    const column = [...layout[from]]
-    ;[column[index], column[target]] = [column[target], column[index]]
-    return { ...layout, [from]: column }
-  }
-  const to = direction === 'left' ? 'left' : 'right'
-  if (to === from) return layout
-  const target = [...layout[to]]
-  target.splice(Math.min(index, target.length), 0, id)
-  return { ...layout, [from]: layout[from].filter((card) => card !== id), [to]: target } as CardLayout
-}
-
-function CardItem({
-  id,
-  onDrop,
-  onMove,
-  render,
-}: {
-  id: CardId
-  onDrop: (id: CardId, point: { x: number; y: number }) => void
-  onMove: (id: CardId, direction: 'up' | 'down' | 'left' | 'right') => void
-  render: (id: CardId, handle: ReactNode) => ReactNode
-}) {
-  const controls = useDragControls()
-  const keys: Record<string, 'up' | 'down' | 'left' | 'right'> = {
-    ArrowUp: 'up',
-    ArrowDown: 'down',
-    ArrowLeft: 'left',
-    ArrowRight: 'right',
-  }
-  const handle = (
-    <button
-      type="button"
-      aria-label="Переместить карточку: перетащите или используйте стрелки"
-      title="Перетащите, чтобы изменить порядок"
-      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 -ml-1.5 cursor-grab touch-none rounded p-0.5 outline-none focus-visible:ring-3 active:cursor-grabbing"
-      onPointerDown={(event) => controls.start(event)}
-      onKeyDown={(event: KeyboardEvent) => {
-        const direction = keys[event.key]
-        if (!direction) return
-        event.preventDefault()
-        onMove(id, direction)
-      }}
-    >
-      <IconGripVertical className="size-4" />
-    </button>
-  )
-  return (
-    <Reorder.Item
-      as="div"
-      value={id}
-      dragListener={false}
-      dragControls={controls}
-      className="min-w-0"
-      onDragEnd={(_: unknown, info: PanInfo) => onDrop(id, info.point)}
-    >
-      {render(id, handle)}
-    </Reorder.Item>
-  )
-}
-
 export function Overview({ isXray, onOpenModal }: { isXray: boolean; onOpenModal: (modal: string) => void }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [candidates, setCandidates] = useState<Candidates | null>(null)
   const [stats, setStats] = useState<SystemStats | null>(null)
-  const [overview, setOverview] = useState<RouterOverview | null>(null)
+  const overview = useRouterOverview((state) => state.overview)
+  const setOverview = useRouterOverview((state) => state.setOverview)
   const [guard, setGuard] = useState<'on' | 'off' | 'inactive' | 'blocked' | null>(null)
-  const [layout, setLayout] = useState<CardLayout>(readLayout)
-  const columns = useRef<Record<'left' | 'right', HTMLDivElement | null>>({ left: null, right: null })
   const history = usePingHistoryStore((s) => s.history)
-  const pushTraffic = useTrafficStore((s) => s.push)
+  const deviceIntervals = useTrafficStore((s) => s.deviceIntervals)
 
   const loadPool = useCallback(async () => {
     try {
@@ -877,19 +691,8 @@ export function Overview({ isXray, onOpenModal }: { isXray: boolean; onOpenModal
       /* next poll retries */
     }
   }, [])
-  const loadOverview = useCallback(async () => {
-    try {
-      const next = await apiCall<RouterOverview>('GET', 'overview', undefined, { timeoutMs: 10000 })
-      setOverview(next)
-      if (next.success) pushTraffic(next)
-    } catch {
-      /* next poll retries */
-    }
-  }, [pushTraffic])
-
   usePolling(loadPool, 10000, isXray)
   usePolling(loadStats, 5000)
-  usePolling(loadOverview, 5000)
   useEffect(() => {
     if (!isXray) return
     void apiCall<Candidates>('GET', 'xray/servers/candidates')
@@ -922,34 +725,6 @@ export function Overview({ isXray, onOpenModal }: { isXray: boolean; onOpenModal
   }, [])
   usePolling(loadGuard, 5000)
 
-  const update = useCallback((next: CardLayout) => {
-    setLayout(next)
-    saveLayout(next)
-  }, [])
-
-  /** A card dropped over the other column moves there, before the card under the pointer. */
-  const drop = useCallback(
-    (id: CardId, point: { x: number; y: number }) => {
-      const x = point.x - window.scrollX
-      const y = point.y - window.scrollY
-      const from = layout.left.includes(id) ? 'left' : 'right'
-      const to = (['left', 'right'] as const).find((side) => {
-        const rect = columns.current[side]?.getBoundingClientRect()
-        return rect && x >= rect.left && x <= rect.right && y >= rect.top - 40 && y <= rect.bottom + 120
-      })
-      if (!to || to === from) return
-      const children = Array.from(columns.current[to]?.children ?? [])
-      const before = children.findIndex((child) => {
-        const rect = child.getBoundingClientRect()
-        return y < rect.top + rect.height / 2
-      })
-      const target = layout[to].filter((card) => card !== id)
-      target.splice(before < 0 ? target.length : before, 0, id)
-      update({ ...layout, [from]: layout[from].filter((card) => card !== id), [to]: target } as CardLayout)
-    },
-    [layout, update]
-  )
-
   // Manual checks and manual mode leave results only in the shared ping history.
   const pool = snapshot && withHistory(snapshot, history)
 
@@ -963,6 +738,8 @@ export function Overview({ isXray, onOpenModal }: { isXray: boolean; onOpenModal
         )
       case 'traffic':
         return <TrafficPanel handle={handle} overview={overview} />
+      case 'device-traffic':
+        return <DeviceTrafficPanel handle={handle} intervals={deviceIntervals} available={overview?.success} />
       case 'devices':
         return <DevicesPanel handle={handle} overview={overview} onUpdate={setOverview} />
       case 'router':
@@ -979,31 +756,7 @@ export function Overview({ isXray, onOpenModal }: { isXray: boolean; onOpenModal
         <p className="text-muted-foreground text-sm">Подключение, трафик и устройства.</p>
       </div>
       <Tiles isXray={isXray} snapshot={pool} overview={overview} guard={guard} />
-      <div className="grid items-start gap-5 lg:grid-cols-2">
-        {(['left', 'right'] as const).map((side) => (
-          <Reorder.Group
-            key={side}
-            as="div"
-            axis="y"
-            values={layout[side]}
-            onReorder={(ids: CardId[]) => update({ ...layout, [side]: ids })}
-            ref={(element: HTMLDivElement | null) => {
-              columns.current[side] = element
-            }}
-            className="flex min-h-24 min-w-0 flex-col gap-5"
-          >
-            {layout[side].map((id) => (
-              <CardItem
-                key={id}
-                id={id}
-                render={render}
-                onDrop={drop}
-                onMove={(card, direction) => update(moveCard(layout, card, direction))}
-              />
-            ))}
-          </Reorder.Group>
-        ))}
-      </div>
+      <OverviewLayout render={render} />
     </div>
   )
 }

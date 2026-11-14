@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 // Cabinet sections live in the URL hash so reload and the back button keep the place.
-export const PAGES = ['overview', 'servers', 'config', 'logs', 'backups', 'cores', 'updates', 'settings', 'users'] as const
+export const PAGES = ['overview', 'traffic', 'servers', 'config', 'logs', 'backups', 'cores', 'updates', 'settings', 'users'] as const
 export type Page = (typeof PAGES)[number]
 
 function readPage(): Page {

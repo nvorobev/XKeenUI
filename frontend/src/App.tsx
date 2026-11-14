@@ -19,6 +19,8 @@ import { TemplateModal } from './components/modals/Templates'
 import { UpdatesPage } from './components/modals/Update'
 import { AppSidebar, MobileNav, TopBar } from './components/shell/AppSidebar'
 import { Overview } from './components/shell/Overview'
+import { TrafficMonitor } from './components/shell/TrafficMonitor'
+import { useCollectTraffic } from './components/shell/trafficHistory'
 import { Toast } from './components/ui/toast'
 import { apiCall, capitalize } from './lib/api'
 import { useLazyMount } from './lib/loader'
@@ -510,6 +512,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
 
   const logout = onLogout
   const page = usePage()
+  useCollectTraffic(page === 'overview' || page === 'traffic')
   const mountUpdates = useLazyMount(page === 'updates')
   const isXray = activeCore !== 'mihomo'
   const hasUnsavedConfigs = useAppContext({ includeConfigs: true }).state.configs.some((config) => config.isDirty)
@@ -551,6 +554,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
         <main className="flex min-w-0 flex-1 flex-col md:overflow-y-auto">
           <div className="flex min-h-0 w-full flex-1 flex-col gap-4 px-3 py-3 md:px-6 md:py-6">
             {page === 'overview' && <Overview isXray={isXray} onOpenModal={openModal} />}
+            {page === 'traffic' && <TrafficMonitor />}
             {page === 'backups' && <BackupsPage onRefreshConfigs={refreshConfigs} />}
             {page === 'cores' && (
               <CoreManagementPage

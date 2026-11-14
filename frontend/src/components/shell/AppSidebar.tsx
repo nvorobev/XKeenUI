@@ -10,7 +10,6 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { CoreLogo } from '@/components/ui/core-logo'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
@@ -57,6 +56,7 @@ function groups(isXray: boolean): Group[] {
       icon: IconLayoutDashboard,
       entries: [
         { label: 'Обзор', page: 'overview' },
+        { label: 'Монитор трафика', page: 'traffic' },
         { label: 'Журнал', page: 'logs' },
       ],
     },
@@ -205,7 +205,6 @@ export function TopBar({
               <TooltipTrigger
                 render={
                   <Button variant="ghost" className="hidden md:inline-flex" onClick={() => onOpenUpdate('self')}>
-                    <IconBox data-icon="inline-start" className="text-muted-foreground" />
                     <span className="text-sm">{version}</span>
                     {isOutdatedUI && <Badge>Обновление</Badge>}
                   </Button>
@@ -225,7 +224,6 @@ export function TopBar({
                 <Button variant="ghost" className="h-10 min-w-0 gap-2.5 px-2" aria-label="Сервис XKeen">
                   <StatusPill tone={tone}>{statusLabel(serviceStatus, pendingText)}</StatusPill>
                   <span className="hidden min-w-0 items-center gap-1.5 md:flex">
-                    <CoreLogo core={currentCore} />
                     <span className="truncate text-sm">
                       {capitalize(currentCore)}
                       {coreVersion && <span className="text-muted-foreground"> v{coreVersion.replace(/^v/, '')}</span>}
@@ -239,7 +237,6 @@ export function TopBar({
             <PopoverContent align="start" className="w-[min(20rem,calc(100vw-1.5rem))] gap-0 p-0">
               <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
                 <span className="flex min-w-0 items-center gap-2">
-                  <CoreLogo core={currentCore} />
                   <span className="truncate font-medium">
                     {capitalize(currentCore)}
                     {coreVersion && <span className="text-muted-foreground font-normal"> v{coreVersion.replace(/^v/, '')}</span>}
